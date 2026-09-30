@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fresh Roles</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="top">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">FR</span>
+        <div>
+          <h1>Fresh Roles</h1>
+          <p class="tagline">New public job posts, matched to your profile. You submit each application yourself.</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <p id="refresh-meta" class="meta">No refresh yet</p>
+        <button id="refresh" class="btn gold" type="button">Refresh new jobs</button>
+      </div>
+    </div>
+  </header>
+  <p class="limit" id="limit-note">
+    This app does not sign in anywhere and does not submit applications.
+    Refresh finds new public posts. Open the employer link and apply there.
+  </p>
+  <p id="banner" class="banner" hidden></p>
+  <main class="layout">
+    <section class="panel" aria-labelledby="profile-heading">
+      <h2 id="profile-heading">Your profile</h2>
+      <p class="hint">The titles and skills start as examples. Change them, or upload a resume to fill them. Nothing here is a password, and it stays in a file on this computer.</p>
+      <ul id="profile-warnings" class="warnings"></ul>
+      <div class="upload" id="resume-upload">
+        <p class="upload-title">Upload resume</p>
+        <p class="hint">PDF, DOCX, or plain text (.txt, .md). Parsed on this computer. The file is not saved and is not sent anywhere.</p>
+        <input id="resume-file" type="file" accept=".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" />
+        <button id="extract-resume" class="btn" type="button" disabled>Extract into profile</button>
+        <p id="extract-status" class="hint" aria-live="polite"></p>
+        <div id="extract-preview" hidden>
+          <ul id="extract-fields" class="extract-fields"></ul>
+          <details id="extract-raw">
+            <summary id="extract-raw-label">Text that was read</summary>
+            <pre id="extract-sample"></pre>
+          </details>
+        </div>
+      </div>
+      <form id="profile-form" autocomplete="off">
+        <label for="name">Name</label>
+        <input id="name" name="name" type="text" maxlength="120" autocomplete="off" />
+
+        <label for="email">Email</label>
+        <input id="email" name="email" type="text" maxlength="120" autocomplete="off" />
+
+        <label for="phone">Phone</label>
+        <input id="phone" name="phone" type="text" maxlength="40" autocomplete="off" />
+
+        <label for="contact">Contact line <span>(printed on the note)</span></label>
+        <input id="contact" name="contact" type="text" maxlength="160" autocomplete="off" placeholder="Leave blank, or add what you want on the note" />
+
+        <label for="links">Links <span>(one per line)</span></label>
+        <textarea id="links" name="links" rows="3"></textarea>
+
+        <label for="titles">Target titles <span>(comma separated)</span></label>
+        <input id="titles" name="titles" type="text" autocomplete="off" />
+
+        <label for="skills">Skills <span>(comma separated)</span></label>
+        <input id="skills" name="skills" type="text" autocomplete="off" />
+
+        <label for="location">Location preference</label>
+        <input id="location" name="location" type="text" maxlength="120" autocomplete="off" placeholder="Remote, or a city" />
+
+        <label for="keywords">Extra keywords <span>(comma separated)</span></label>
+        <input id="keywords" name="keywords" type="text" autocomplete="off" />
+
+        <label for="summary">Summary used in drafts</label>
+        <textarea id="summary" name="summary" rows="6" maxlength="2000"></textarea>
+
+        <label for="experience">Experience <span>(for you to edit; matching uses titles, skills, keywords, and location)</span></label>
+        <textarea id="experience" name="experience" rows="6" maxlength="4000"></textarea>
+
+        <label for="education">Education</label>
+        <textarea id="education" name="education" rows="4" maxlength="2000"></textarea>
+
+        <button class="btn primary" type="submit">Save profile</button>
+        <p id="save-state" class="hint" aria-live="polite"></p>
+      </form>
+    </section>
+
+    <section class="panel list-panel" aria-labelledby="list-heading">
+      <div class="list-head">
+        <h2 id="list-heading">New posts</h2>
+        <p id="list-count" class="hint"></p>
+      </div>
+      <div class="tabs" role="toolbar" aria-label="Status">
+        <button type="button" data-status="new" aria-pressed="true">New <span data-count="new">0</span></button>
+        <button type="button" data-status="drafted">Drafted <span data-count="drafted">0</span></button>
+        <button type="button" data-status="ready">Ready <span data-count="ready">0</span></button>
+        <button type="button" data-status="applied">Applied <span data-count="applied">0</span></button>
+        <button type="button" data-status="skipped">Skipped <span data-count="skipped">0</span></button>
+        <button type="button" data-status="all">All <span data-count="all">0</span></button>
+      </div>
+      <div class="filters">
+        <label>Keyword
+          <input id="filter-keyword" type="text" autocomplete="off" />
+        </label>
+        <label>Role
+          <input id="filter-role" type="text" autocomplete="off" placeholder="In the title" />
+        </label>
+        <label>Location
+          <input id="filter-location" type="text" autocomplete="off" />
+        </label>
+        <label>Minimum match
+          <input id="filter-score" type="number" min="0" max="100" step="1" value="1" />
+        </label>
+      </div>
+      <p class="hint">Newest posts first. Raise the minimum match to hide weak overlaps. Set it to 0 to see posts with no overlap.</p>
+      <div id="list" class="list"></div>
+    </section>
+
+    <section class="panel detail-panel" aria-labelledby="detail-heading">
+      <h2 id="detail-heading" class="sr">Job detail</h2>
+      <div id="detail"></div>
+    </section>
+  </main>
+  <footer class="foot">
+    <p>
+      Posts come from public feeds. Each job links back to the original listing:
+      <a href="https://remotive.com">Remotive</a>,
+      <a href="https://www.arbeitnow.com">Arbeitnow</a>,
+      <a href="https://remoteok.com">Remote OK</a>,
+      and <a href="https://jobicy.com">Jobicy</a>.
+    </p>
+    <details>
+      <summary>Check for new posts every 10 minutes</summary>
+      <p>Click <strong>Refresh new jobs</strong>, or run this once in Terminal from this folder. It does not submit applications.</p>
+      <pre>python3 app.py refresh</pre>
+      <p>To repeat that every 10 minutes, you can add a cron line. Remotive is still queried only a few times a day, and Arbeitnow about once an hour.</p>
+      <pre>*/10 * * * * cd "/Users/dslc/Try Job hunt" &amp;&amp; /usr/bin/python3 app.py refresh &gt;&gt; "/Users/dslc/Try Job hunt/data/refresh.log" 2&gt;&amp;1</pre>
+    </details>
+  </footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>

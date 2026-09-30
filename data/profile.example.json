@@ -1,0 +1,32 @@
+{
+  "name": "Your Name",
+  "contact": "",
+  "target_titles": [
+    "Software Engineer",
+    "Backend Engineer"
+  ],
+  "skills": [
+    "Python",
+    "JavaScript",
+    "SQL",
+    "APIs"
+  ],
+  "location": "Remote",
+  "keywords": [
+    "python",
+    "backend"
+  ],
+  "summary": "Replace this with a short summary of your experience and what you want next. This text is copied into every cover note, so write it in your own words.",
+  "email": "",
+  "phone": "",
+  "links": [],
+  "experience": "",
+  "education": "",
+  "filters": {
+    "keyword": "",
+    "role": "",
+    "location": "",
+    "status": "new",
+    "min_score": 1
+  }
+}

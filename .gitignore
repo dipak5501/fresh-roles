@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+data/profile.json
+data/store.json
+data/store.json.tmp
+data/profile.json.tmp
+data/profile.json.bak
+data/.lock
+data/refresh.log
+data/*.tmp
+data/*.pdf
+data/*.docx
