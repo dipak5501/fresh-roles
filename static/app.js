@@ -1,4 +1,24 @@
-const STATUS_ORDER = ["new", "drafted", "ready", "applied", "skipped", "all"];
+const STATUS_ORDER = [
+  "new",
+  "drafted",
+  "ready",
+  "applied",
+  "interviewing",
+  "offer",
+  "rejected",
+  "archived",
+  "all",
+];
+const TRACKER = [
+  ["new", "New"],
+  ["drafted", "Drafted"],
+  ["ready", "Ready"],
+  ["applied", "Applied"],
+  ["interviewing", "Interviewing"],
+  ["offer", "Offer received"],
+  ["rejected", "Rejected"],
+  ["archived", "Archived"],
+];
 
 let jobs = [];
 let detail = null;
@@ -11,6 +31,8 @@ let saveTimer = null;
 let saveGen = 0;
 let stateVersion = 0;
 let booted = false;
+let weekApplied = 0;
+let draftDirty = false;
 
 function h(tag, attrs, children) {
   const node = document.createElement(tag);
@@ -19,6 +41,8 @@ function h(tag, attrs, children) {
     if (key === "class") node.className = value;
     else if (key === "onclick") node.addEventListener("click", value);
     else if (key === "onkeydown") node.addEventListener("keydown", value);
+    else if (key === "oninput") node.addEventListener("input", value);
+    else if (key === "onchange") node.addEventListener("change", value);
     else node.setAttribute(key, value === true ? "" : String(value));
   }
   const kids = children == null ? [] : Array.isArray(children) ? children : [children];
@@ -99,8 +123,31 @@ function profileFromForm() {
     summary: document.getElementById("summary").value.trim(),
     experience: document.getElementById("experience").value.trim(),
     education: document.getElementById("education").value.trim(),
+    weekly_target: Number(document.getElementById("weekly-target").value || 0),
     filters: filtersFromForm(),
   };
+}
+
+function originalUrl(job) {
+  const candidates = [job && job.original_url, job && job.url, job && job.apply_url];
+  for (const value of candidates) {
+    if (typeof value === "string" && /^https?:\/\//i.test(value.trim())) return value.trim();
+  }
+  return "";
+}
+
+function sourceLabel(job) {
+  const draft = (job && job.draft) || {};
+  const source = draft.source || job.match_source;
+  const model = draft.model || job.match_model;
+  if (source === "ollama" && model) {
+    return (
+      "Notes from " +
+      model +
+      " via Ollama on this Mac's GPU, checked against your profile. The score is the built-in overlap count."
+    );
+  }
+  return "Notes and score from the built-in matcher on this computer.";
 }
 
 function filtersFromForm() {
@@ -126,6 +173,8 @@ function fillProfile(profile) {
   document.getElementById("summary").value = profile.summary || "";
   document.getElementById("experience").value = profile.experience || "";
   document.getElementById("education").value = profile.education || "";
+  const target = document.getElementById("weekly-target");
+  if (target && document.activeElement !== target) target.value = String(profile.weekly_target ?? 5);
   const filters = profile.filters || {};
   document.getElementById("filter-keyword").value = filters.keyword || "";
   document.getElementById("filter-role").value = filters.role || "";
@@ -163,14 +212,71 @@ function applyState(data, refillProfile) {
   const total = data.meta?.total ?? jobs.length;
   document.getElementById("refresh-meta").textContent = `${when} · ${total} stored`;
   if (refillProfile && data.profile) fillProfile(data.profile);
+  renderDesk(data.meta);
   renderWarnings();
   renderTabs();
+  renderQueue();
   renderList();
   refreshDetailMeta();
 }
 
+function renderDesk(meta) {
+  const ai = (meta && meta.ai) || {};
+  const note = document.getElementById("ai-note");
+  if (note) note.textContent = ai.label || "Built-in matcher";
+  if (meta && meta.week) weekApplied = Number(meta.week.applied || 0);
+  renderWeek();
+}
+
+function renderWeek() {
+  const note = document.getElementById("week-note");
+  const target = document.getElementById("weekly-target");
+  if (!note) return;
+  const value = target ? target.value || "0" : "0";
+  note.textContent = `This week: ${weekApplied} in Applied, Interviewing, or Offer · target ${value}. This reminder does not block the queue.`;
+}
+
+function renderQueue() {
+  const root = document.getElementById("queue-list");
+  const note = document.getElementById("queue-note");
+  if (!root) return;
+  const waiting = jobs.filter((job) => job.agent && job.agent.mode === "supervised" && job.status === "ready");
+  if (note) {
+    note.textContent = waiting.length
+      ? `${waiting.length} waiting for you. Supervised mode stops here. Nothing is submitted.`
+      : "Supervised mode only works on jobs you add. It stops at Ready so you can review. Nothing is submitted.";
+  }
+  root.replaceChildren();
+  if (!waiting.length) {
+    root.append(h("p", { class: "fine" }, "The queue is empty."));
+    return;
+  }
+  for (const job of waiting.slice(0, 8)) {
+    root.append(
+      h(
+        "button",
+        { type: "button", class: "queue-item", onclick: () => selectJob(job.id) },
+        `${job.title} · ${job.company}`
+      )
+    );
+  }
+}
+
+async function reloadWeek() {
+  try {
+    const response = await fetch("/api/meta");
+    const data = await readJson(response);
+    renderDesk(data);
+  } catch (error) {
+    /* The week line updates on the next full load. */
+  }
+}
+
 function renderTabs() {
-  const counts = { new: 0, drafted: 0, ready: 0, applied: 0, skipped: 0, all: jobs.length };
+  const counts = { all: jobs.length };
+  for (const status of STATUS_ORDER) {
+    if (status !== "all") counts[status] = 0;
+  }
   for (const job of jobs) counts[job.status] = (counts[job.status] || 0) + 1;
   for (const status of STATUS_ORDER) {
     const button = document.querySelector(`[data-status="${status}"]`);
@@ -223,25 +329,61 @@ function renderList() {
     const titleKids = [job.title];
     const showJustIn = lastNewIds.size > 0 && lastNewIds.size < jobs.length;
     if (showJustIn && lastNewIds.has(job.id)) titleKids.push(h("span", { class: "badge" }, "Just in"));
-    const openJob = () => selectJob(job.id);
+    const url = originalUrl(job);
+    const openPosting = () => {
+      if (!url) {
+        showBanner("The original link is missing for this posting.", true);
+        selectJob(job.id);
+        return;
+      }
+      window.open(url, "_blank", "noopener,noreferrer");
+      recordOpen(job.id);
+      selectJob(job.id);
+    };
+    const title = url
+      ? h(
+          "a",
+          {
+            class: "job-title",
+            href: url,
+            target: "_blank",
+            rel: "noopener noreferrer",
+            onclick: (event) => {
+              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+              event.preventDefault();
+              window.open(url, "_blank", "noopener,noreferrer");
+              recordOpen(job.id);
+              selectJob(job.id);
+            },
+          },
+          titleKids
+        )
+      : h(
+          "button",
+          {
+            class: "job-title missing",
+            type: "button",
+            onclick: (event) => {
+              event.stopPropagation();
+              showBanner("The original link is missing for this posting.", true);
+              selectJob(job.id);
+            },
+          },
+          titleKids
+        );
     root.append(
       h(
-        "div",
+        "article",
         {
           class: "job" + (job.id === selectedId ? " selected" : ""),
-          role: "button",
-          tabindex: "0",
-          onclick: openJob,
-          onkeydown: (event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              openJob();
-            }
+          onclick: (event) => {
+            if (event.target.closest("a, button")) return;
+            openPosting();
           },
         },
         [
           h("div", { class: "job-top" }, [
-            h("strong", {}, titleKids),
+            title,
             h("span", { class: "score " + band(job.score) }, String(job.score || 0)),
           ]),
           h("p", { class: "company" }, job.company),
@@ -250,6 +392,21 @@ function renderList() {
             h("span", { class: "pill " + (job.status || "new") }, job.status || "new"),
           ]),
           h("p", { class: "reason" }, (job.match_reasons && job.match_reasons[0]) || ""),
+          job.gaps_ready && job.gaps && job.gaps.length
+            ? h("p", { class: "gaps-line" }, "Gaps: " + job.gaps.slice(0, 3).join(", "))
+            : null,
+          h(
+            "button",
+            {
+              class: "btn ghost tiny",
+              type: "button",
+              onclick: (event) => {
+                event.stopPropagation();
+                selectJob(job.id);
+              },
+            },
+            "Review match"
+          ),
         ]
       )
     );
@@ -300,9 +457,39 @@ function refreshDetailMeta() {
   }
 }
 
+function gapBlock(job) {
+  if (!job.gaps_ready && job.gap_note !== "missing" && job.gap_note !== "none_missing" && job.gap_note !== "none_detected") {
+    return h("p", { class: "fine" }, "Gaps show up with the draft.");
+  }
+  if (job.gap_note === "none_detected") {
+    return h(
+      "p",
+      { class: "fine" },
+      "No clear required-skill list was found in this posting, so no gaps were marked. Skills that are only on your profile are not gaps."
+    );
+  }
+  if (!job.gaps || !job.gaps.length) {
+    return h("p", { class: "fine" }, "No skill this posting emphasizes is missing from your profile.");
+  }
+  return h("div", {}, [
+    h("h3", {}, "Gaps"),
+    h(
+      "p",
+      { class: "fine" },
+      "Skills this posting emphasizes that are not on your profile. Skills you have that this job does not ask for are not listed."
+    ),
+    h("ul", { class: "gaps" }, job.gaps.map((gap) => h("li", {}, gap))),
+  ]);
+}
+
+function markDraftDirty() {
+  draftDirty = true;
+}
+
 function renderDetail() {
   const root = document.getElementById("detail");
   root.replaceChildren();
+  draftDirty = false;
   if (!detail) {
     root.append(
       h("div", { class: "empty" }, [
@@ -310,25 +497,49 @@ function renderDetail() {
         h(
           "p",
           {},
-          "Match reasons, a draft note, and the real apply link show up here. You submit the application on the employer site."
+          "Click a title to open the original posting in a new tab. The match, gaps, and draft stay on this page. You submit the application yourself."
         ),
       ])
     );
     return;
   }
   const job = detail;
-  const reasons = h("ul", { class: "reasons", id: "live-reasons" }, (job.match_reasons || []).map((reason) => h("li", {}, reason)));
-  const draft = job.draft;
-  const answerFields = (draft && draft.answers ? draft.answers : []).map((answer) =>
-    h("label", {}, [
-      answer.question || "Answer",
-      h("textarea", { class: "answer", "data-question": answer.question || "Answer", rows: "4" }, answer.answer || ""),
-    ])
+  const draft = job.draft || {};
+  const url = originalUrl(job);
+  const bullets = draft.bullet_emphasis || [];
+  const bulletFields = (bullets.length ? bullets : [""]).map((line) =>
+    h("textarea", { class: "bullet", rows: "3", oninput: markDraftDirty }, line || "")
   );
+  const tracker = h(
+    "select",
+    {
+      id: "tracker-status",
+      onchange: (event) => {
+        const next = event.target.value;
+        if (next && next !== job.status) setStatus(next);
+      },
+    },
+    TRACKER.map(([value, label]) => h("option", { value, selected: value === job.status }, label))
+  );
+  const postingLink = url
+    ? h(
+        "a",
+        {
+          class: "btn primary apply",
+          href: url,
+          target: "_blank",
+          rel: "noopener noreferrer",
+          onclick: () => recordOpen(job.id),
+        },
+        "Open original posting"
+      )
+    : h("p", { class: "missing-link" }, "The original link is missing for this posting.");
   const nodes = [
     h("p", { class: "source-line" }, [
-      "Source: ",
-      h("a", { href: job.url, target: "_blank", rel: "noopener noreferrer" }, job.source || "Original listing"),
+      "Listing: ",
+      url
+        ? h("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, job.source || "Original posting")
+        : job.source || "Source feed",
       job.also_seen_on && job.also_seen_on.length ? ` · Also seen on ${job.also_seen_on.join(", ")}` : "",
     ]),
     h("h2", {}, job.title),
@@ -346,42 +557,43 @@ function renderDetail() {
         h("span", { class: "pill " + job.status, id: "status-pill" }, job.status),
       ]),
     ]),
+    h("p", { class: "fine source-note" }, sourceLabel(job)),
     job.tags && job.tags.length ? h("ul", { class: "tags" }, job.tags.slice(0, 8).map((tag) => h("li", {}, tag))) : null,
-    reasons,
-    h(
-      "a",
-      {
-        class: "btn primary apply",
-        href: job.apply_url || job.url,
-        target: "_blank",
-        rel: "noopener noreferrer",
-        onclick: () => recordOpen(job.id),
-      },
-      "Open the application page"
-    ),
-    h("p", { class: "fine" }, "Opens the original posting in a new tab. Fresh Roles does not send the application."),
+    h("h3", {}, "Why it fits"),
+    h("ul", { class: "reasons", id: "live-reasons" }, (job.match_reasons || []).map((reason) => h("li", {}, reason))),
+    gapBlock(job),
+    postingLink,
+    h("p", { class: "fine" }, "The original posting opens in a new tab. This page does not submit the application."),
     job.link_opened_at ? h("p", { class: "fine", id: "opened-note" }, "You have opened this link from here.") : null,
+    job.agent
+      ? h("p", { class: "queue-flag" }, job.agent.note || "In the supervised queue. Nothing was submitted.")
+      : null,
     h("div", { class: "actions" }, [
-      h("button", { class: "btn", type: "button", id: "draft-btn", onclick: generateDraft }, draft ? "Draft again" : "Draft application note"),
-      h("button", { class: "btn ghost", type: "button", onclick: () => setStatus("ready") }, "Mark ready"),
-      h("button", { class: "btn ghost", type: "button", onclick: () => setStatus("applied") }, "Mark applied"),
-      h("button", { class: "btn ghost", type: "button", onclick: () => setStatus("skipped") }, "Skip"),
+      h("button", { class: "btn gold", type: "button", id: "add-btn", onclick: addToQueue }, "Add to supervised queue"),
+      h("button", { class: "btn", type: "button", id: "draft-btn", onclick: generateDraft }, draft.cover_note || draft.resume_summary ? "Draft again" : "Draft materials"),
     ]),
-    h("div", { class: "draft-box", id: "draft-box" }, draft
-      ? [
-          h("h3", {}, "Draft to edit and copy"),
-          (draft.warnings || []).length
-            ? h("ul", { class: "warnings" }, draft.warnings.map((warning) => h("li", {}, warning)))
-            : null,
-          h("label", {}, ["Cover note", h("textarea", { id: "cover", rows: "10" }, draft.cover_note || "")]),
-          ...answerFields,
-          h("div", { class: "actions" }, [
-            h("button", { class: "btn primary", type: "button", onclick: () => saveDraft() }, "Save draft"),
-            h("button", { class: "btn ghost", type: "button", onclick: copyDraft }, "Copy draft"),
-          ]),
-          h("p", { class: "fine", id: "draft-state" }, "Saved on this computer. Paste it into the employer form."),
-        ]
-      : [h("p", { class: "fine" }, "Draft a note from your profile, then copy it into the real application.")]),
+    h("label", { class: "tracker-label" }, ["Tracker", tracker]),
+    h("div", { class: "draft-box", id: "draft-box" }, [
+      h("h3", {}, "Tailored for this job"),
+      (draft.warnings || []).length
+        ? h("ul", { class: "warnings" }, draft.warnings.map((warning) => h("li", {}, warning)))
+        : null,
+      h("label", {}, [
+        "Resume summary",
+        h("textarea", { id: "resume-summary", rows: "5", oninput: markDraftDirty }, draft.resume_summary || ""),
+      ]),
+      h("p", { class: "fine" }, "Bullet emphasis from your experience"),
+      ...bulletFields,
+      h("label", {}, [
+        "Cover note",
+        h("textarea", { id: "cover", rows: "10", oninput: markDraftDirty }, draft.cover_note || ""),
+      ]),
+      h("div", { class: "actions" }, [
+        h("button", { class: "btn primary", type: "button", onclick: () => saveDraft() }, "Save draft"),
+        h("button", { class: "btn ghost", type: "button", onclick: copyDraft }, "Copy draft"),
+      ]),
+      h("p", { class: "fine", id: "draft-state" }, "Kept on this computer. Paste it into the employer form yourself."),
+    ]),
     h("h3", {}, "Posting text"),
     h("div", { class: "description" }, job.description || "This feed did not include a description."),
   ];
@@ -394,12 +606,17 @@ async function selectJob(id) {
   const token = ++selectToken;
   selectedId = id;
   renderList();
+  const root = document.getElementById("detail");
+  root.replaceChildren(h("p", { class: "empty" }, "Preparing the match score and draft on this computer…"));
   try {
     const response = await fetch("/api/jobs/" + encodeURIComponent(id));
     const job = await readJson(response);
     if (token !== selectToken) return;
     detail = job;
     mergeJob(job);
+    renderTabs();
+    renderQueue();
+    renderList();
     renderDetail();
   } catch (error) {
     if (token !== selectToken) return;
@@ -409,12 +626,22 @@ async function selectJob(id) {
 
 function collectDraft() {
   const cover = document.getElementById("cover");
-  if (!cover) return null;
+  const summary = document.getElementById("resume-summary");
+  if (!cover && !summary) return null;
   const answers = [];
   document.querySelectorAll("textarea.answer").forEach((field) => {
     answers.push({ question: field.getAttribute("data-question") || "Answer", answer: field.value });
   });
-  return { cover_note: cover.value, answers };
+  const bullet_emphasis = [];
+  document.querySelectorAll("textarea.bullet").forEach((field) => {
+    if (field.value.trim()) bullet_emphasis.push(field.value.trim());
+  });
+  return {
+    cover_note: cover ? cover.value : "",
+    resume_summary: summary ? summary.value : "",
+    bullet_emphasis,
+    answers,
+  };
 }
 
 async function saveDraft(silent) {
@@ -436,8 +663,45 @@ async function saveDraft(silent) {
   }
   const state = document.getElementById("draft-state");
   if (state && !silent) state.textContent = "Draft saved on this computer.";
+  draftDirty = false;
   renderTabs();
+  renderQueue();
   renderList();
+}
+
+async function addToQueue() {
+  if (!detail) return;
+  const button = document.getElementById("add-btn");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Preparing…";
+  }
+  try {
+    if (draftDirty) await saveDraft(true);
+    const response = await fetch("/api/jobs/" + encodeURIComponent(detail.id) + "/add", { method: "POST" });
+    const job = await readJson(response);
+    detail = job;
+    mergeJob(job);
+    draftDirty = false;
+    renderTabs();
+    renderQueue();
+    renderList();
+    renderDetail();
+    const stopped = job.agent && job.agent.stopped_at;
+    showBanner(
+      stopped === "ready"
+        ? "In the supervised queue as ready. Nothing was submitted."
+        : (job.agent && job.agent.note) || "Updated.",
+      false
+    );
+    reloadWeek();
+  } catch (error) {
+    showBanner(error.message, true);
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Add to supervised queue";
+    }
+  }
 }
 
 async function generateDraft() {
@@ -478,8 +742,10 @@ async function setStatus(status) {
     detail = job;
     mergeJob(job);
     renderTabs();
+    renderQueue();
     renderList();
     renderDetail();
+    reloadWeek();
   } catch (error) {
     showBanner(error.message, true);
   }
@@ -509,7 +775,15 @@ function recordOpen(id) {
 async function copyDraft() {
   const cover = document.getElementById("cover");
   if (!cover) return;
-  const chunks = [cover.value.trim()];
+  const chunks = [];
+  const summary = document.getElementById("resume-summary");
+  if (summary && summary.value.trim()) chunks.push("Resume summary\n" + summary.value.trim());
+  const bullets = [];
+  document.querySelectorAll("textarea.bullet").forEach((field) => {
+    if (field.value.trim()) bullets.push("- " + field.value.trim());
+  });
+  if (bullets.length) chunks.push("Bullet emphasis\n" + bullets.join("\n"));
+  chunks.push(cover.value.trim());
   document.querySelectorAll("textarea.answer").forEach((field) => {
     const question = field.getAttribute("data-question") || "Answer";
     chunks.push(question + "\n" + field.value.trim());
@@ -606,6 +880,13 @@ function bind() {
     const input = document.getElementById("resume-file");
     if (input.files && input.files[0]) uploadResume(input.files[0]);
   });
+  const weekly = document.getElementById("weekly-target");
+  if (weekly) {
+    weekly.addEventListener("input", () => {
+      renderWeek();
+      scheduleSave();
+    });
+  }
   ["filter-keyword", "filter-role", "filter-location", "filter-score"].forEach((id) => {
     document.getElementById(id).addEventListener("input", () => {
       listLimit = 40;

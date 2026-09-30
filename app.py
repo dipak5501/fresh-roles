@@ -10,18 +10,20 @@ import hashlib
 import json
 import re
 import sys
+import threading
 import time
 import traceback
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import unescape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
+import insight
 from resume_extract import resume_from_upload
 
 ROOT = Path(__file__).resolve().parent
@@ -31,7 +33,18 @@ PROFILE_PATH = DATA / "profile.json"
 STORE_PATH = DATA / "store.json"
 LOCK_PATH = DATA / ".lock"
 
-STATUSES = ("new", "drafted", "ready", "applied", "skipped")
+STATUSES = (
+    "new",
+    "drafted",
+    "ready",
+    "applied",
+    "interviewing",
+    "offer",
+    "rejected",
+    "archived",
+)
+LEGACY_STATUS = {"skipped": "archived"}
+TRACKED = {"applied", "interviewing", "offer"}
 USER_AGENT = "FreshRoles/1.0 (personal local job search; links back to the source listing)"
 
 SOURCES = {
@@ -206,6 +219,16 @@ def load_store():
     data.setdefault("sources", {})
     data.setdefault("last_new_ids", [])
     data.setdefault("last_refresh_at", None)
+    migrated = False
+    for job in data["jobs"].values():
+        if not isinstance(job, dict):
+            continue
+        mapped = LEGACY_STATUS.get(job.get("status") or "")
+        if mapped:
+            job["status"] = mapped
+            migrated = True
+    if migrated:
+        save_store(data)
     return data
 
 
@@ -217,6 +240,7 @@ def normalize_profile(raw):
     raw = raw if isinstance(raw, dict) else {}
     filters = raw.get("filters") if isinstance(raw.get("filters"), dict) else {}
     status = filters.get("status") or "new"
+    status = LEGACY_STATUS.get(status, status)
     if status not in STATUSES and status != "all":
         status = "new"
     try:
@@ -224,6 +248,11 @@ def normalize_profile(raw):
     except (TypeError, ValueError):
         min_score = 0
     min_score = max(0, min(100, min_score))
+    try:
+        weekly_target = int(raw.get("weekly_target") if raw.get("weekly_target") is not None else 5)
+    except (TypeError, ValueError):
+        weekly_target = 5
+    weekly_target = max(0, min(100, weekly_target))
     name = clip(raw.get("name"), 120)
     summary = plain_text(raw.get("summary") or "", limit=2000)
     return {
@@ -240,6 +269,7 @@ def normalize_profile(raw):
         "links": as_list(raw.get("links"), limit=12, item_limit=240),
         "experience": plain_text(raw.get("experience") or "", limit=4000),
         "education": plain_text(raw.get("education") or "", limit=2000),
+        "weekly_target": weekly_target,
         "filters": {
             "keyword": clip(filters.get("keyword"), 80),
             "role": clip(filters.get("role"), 80),
@@ -460,9 +490,14 @@ def score_job(job, profile):
         points += 12
         reasons.append(f"Location matches “{preference}”")
 
+    experience = (profile.get("experience") or "").lower()
+    experienced = [skill for skill in skill_hits if contains_term(experience, skill)]
+    if experienced:
+        reasons.append("Your experience mentions " + ", ".join(experienced[:4]))
+
     if not reasons:
         reasons.append("No strong overlap with your profile yet. Edit titles or skills to tighten this.")
-    return {"score": min(100, points), "reasons": reasons[:4], "skill_hits": skill_hits}
+    return {"score": min(100, points), "reasons": reasons[:5], "skill_hits": skill_hits}
 
 
 def build_search_text(job):
@@ -713,7 +748,17 @@ def trim_jobs(store):
     jobs = store["jobs"]
     if len(jobs) <= MAX_JOBS:
         return
-    rank = {"skipped": 0, "applied": 1, "new": 2, "drafted": 3, "ready": 4}
+    rank = {
+        "new": 0,
+        "archived": 1,
+        "skipped": 1,
+        "rejected": 2,
+        "applied": 3,
+        "drafted": 4,
+        "interviewing": 5,
+        "offer": 6,
+        "ready": 7,
+    }
 
     def sort_key(job):
         return (rank.get(job.get("status"), 2), job.get("first_seen_at") or "")
@@ -721,7 +766,7 @@ def trim_jobs(store):
     for job in sorted(jobs.values(), key=sort_key):
         if len(jobs) <= MAX_JOBS:
             break
-        if job.get("status") in {"drafted", "ready"}:
+        if job.get("status") in {"drafted", "ready", "interviewing", "offer"}:
             continue
         jobs.pop(job.get("id"), None)
 
@@ -833,59 +878,31 @@ def refresh():
     }
 
 
-def build_draft(job, profile, skill_hits):
-    name = (profile.get("name") or "").strip() or "Your Name"
-    contact = (profile.get("contact") or "").strip()
-    summary = (profile.get("summary") or "").strip()
-    if summary.startswith("Replace this with"):
-        summary = "[Edit your profile summary before sending.] " + summary
-    company = job.get("company") or "the hiring team"
-    title = job.get("title") or "this role"
-    if skill_hits:
-        skills_text = ", ".join(skill_hits[:5])
-        skill_sentence = f"This posting stood out because it connects to my experience with {skills_text}."
-    else:
-        skills_text = "the skills I will add on my profile"
-        skill_sentence = (
-            "I still need to line up concrete skills from my profile with this posting before I send it."
-        )
-    preference = profile.get("location") or "my preferred location"
-    job_location = job.get("location") or "the location on the posting"
-    salary = job.get("salary") or ""
-    pay_sentence = f" The posting lists pay as: {salary}." if re.search(r"\d", salary) else ""
-    sign_off = name if not contact else f"{name}\n{contact}"
-    cover = (
-        f"Hello {company} team,\n\n"
-        f"I am applying for the {title} role. {summary}\n\n"
-        f"{skill_sentence} I am focused on {preference} roles and can talk through relevant work in a first conversation.\n\n"
-        f"Thank you for your time,\n{sign_off}"
-    )
-    answers = [
-        {
-            "question": "Why this role?",
-            "answer": (
-                f"I am applying for {title} at {company} because it matches the kind of work I want. "
-                f"{skill_sentence}{pay_sentence}"
-            ),
-        },
-        {
-            "question": "Relevant skills",
-            "answer": (
-                f"Skills from my profile that appear in this posting: {skills_text}."
-                if skill_hits
-                else "None of the skills on my profile were found in the posting text. Edit your skills, generate the note again, and add a real example before you submit."
-            ),
-        },
-        {
-            "question": "Location",
-            "answer": f"My location preference is {preference}. This posting lists {job_location}. Confirm this still fits before you submit.",
-        },
-    ]
-    return cover, answers
+def external_url(job):
+    for key in ("url", "apply_url"):
+        url = str(job.get(key) or "").strip()
+        if url.lower().startswith(("http://", "https://")):
+            return url
+    return ""
 
 
-def public_job(job, profile, detail=False):
+def public_job(job, profile, detail=False, profile_fp=None):
     match = score_job(job, profile)
+    fp = profile_fp if profile_fp is not None else insight.profile_fp(profile)
+    cached = job.get("insight") if isinstance(job.get("insight"), dict) else None
+    fresh = bool(cached and cached.get("profile_fp") == fp)
+    fit = list(match["reasons"])
+    gaps = []
+    gap_note = ""
+    match_source = "builtin"
+    match_model = ""
+    if fresh:
+        fit = list(cached.get("fit") or fit)
+        gaps = list(cached.get("gaps") or [])
+        gap_note = cached.get("gap_note") or ""
+        match_source = cached.get("source") or "builtin"
+        match_model = cached.get("model") or ""
+    agent = job.get("agent") if isinstance(job.get("agent"), dict) else None
     payload = {
         "id": job["id"],
         "title": job.get("title") or "",
@@ -895,6 +912,7 @@ def public_job(job, profile, detail=False):
         "tags": job.get("tags") or [],
         "url": job.get("url") or "",
         "apply_url": job.get("apply_url") or job.get("url") or "",
+        "original_url": external_url(job),
         "source": job.get("source") or "",
         "also_seen_on": job.get("also_seen_on") or [],
         "salary": job.get("salary") or "",
@@ -902,10 +920,23 @@ def public_job(job, profile, detail=False):
         "first_seen_at": job.get("first_seen_at"),
         "status": job.get("status") or "new",
         "score": match["score"],
-        "match_reasons": match["reasons"],
+        "match_reasons": fit,
+        "gaps": gaps,
+        "gap_note": gap_note,
+        "gaps_ready": fresh,
+        "match_source": match_source,
+        "match_model": match_model,
         "link_opened_at": job.get("link_opened_at"),
         "has_draft": bool(job.get("draft")),
         "search_text": build_search_text(job),
+        "agent": None
+        if not agent
+        else {
+            "mode": "supervised",
+            "added_at": agent.get("added_at") or "",
+            "stopped_at": agent.get("stopped_at") or "",
+            "note": agent.get("note") or "",
+        },
     }
     if detail:
         payload["description"] = job.get("description") or ""
@@ -942,20 +973,57 @@ def public_sources(store):
     return listed
 
 
+def week_start():
+    now = datetime.now().astimezone()
+    start = now - timedelta(days=now.weekday())
+    return start.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def applied_this_week(store):
+    start_ts = int(week_start().timestamp())
+    count = 0
+    for job in store["jobs"].values():
+        if (job.get("status") or "") not in TRACKED:
+            continue
+        if parse_ts(job.get("applied_at")) >= start_ts:
+            count += 1
+    return count
+
+
+def desk_meta(store, profile):
+    return {
+        "ai": insight.engine_status(),
+        "week": {
+            "target": int(profile.get("weekly_target") or 0),
+            "applied": applied_this_week(store),
+        },
+        "counts": counts_for(store),
+    }
+
+
 def state_from(store, profile):
-    jobs = [public_job(job, profile, detail=False) for job in store["jobs"].values()]
+    fp = insight.profile_fp(profile)
+    jobs = [public_job(job, profile, detail=False, profile_fp=fp) for job in store["jobs"].values()]
     jobs.sort(key=lambda item: (item.get("published_ts") or 0, item.get("score") or 0), reverse=True)
+    meta = desk_meta(store, profile)
+    meta.update(
+        {
+            "last_refresh_at": store.get("last_refresh_at"),
+            "last_new_ids": store.get("last_new_ids") or [],
+            "sources": public_sources(store),
+            "total": len(store["jobs"]),
+            "queue_ids": [
+                job["id"]
+                for job in store["jobs"].values()
+                if isinstance(job.get("agent"), dict) and job.get("status") == "ready"
+            ],
+        }
+    )
     return {
         "profile": profile,
         "jobs": jobs,
         "warnings": profile_warnings(profile),
-        "meta": {
-            "last_refresh_at": store.get("last_refresh_at"),
-            "last_new_ids": store.get("last_new_ids") or [],
-            "counts": counts_for(store),
-            "sources": public_sources(store),
-            "total": len(store["jobs"]),
-        },
+        "meta": meta,
     }
 
 
@@ -974,47 +1042,105 @@ def update_profile(payload):
         return state_from(load_store(), profile)
 
 
-def job_detail(job_id):
-    if not valid_id(job_id):
-        return None
+def _snapshot_job(job_id):
     with locked():
         store = load_store()
         job = store["jobs"].get(job_id)
         if not job:
-            return None
-        return public_job(job, load_profile(), detail=True)
+            return None, None
+        return json.loads(json.dumps(job)), json.loads(json.dumps(load_profile()))
 
 
-def generate_draft(job_id):
+def _attach_draft(job, built, profile, replace):
+    draft = dict(built["draft"])
+    draft["warnings"] = profile_warnings(profile)
+    if replace or not (isinstance(job.get("draft"), dict) and job["draft"].get("edited")):
+        job["draft"] = draft
+    elif isinstance(job.get("draft"), dict):
+        job["draft"]["warnings"] = profile_warnings(profile)
+    job["insight"] = built
+
+
+def prepare_job(job_id, force=False, queue=False, mark_drafted=False):
+    """Build match notes and a draft. The queue stops at ready and never submits."""
     if not valid_id(job_id):
         return None
+    job_copy, profile_copy = _snapshot_job(job_id)
+    if job_copy is None:
+        return None
+    edited = bool(isinstance(job_copy.get("draft"), dict) and job_copy["draft"].get("edited"))
+    have_fresh = insight.fresh(job_copy, profile_copy)
+    rebuild = (force or not have_fresh) and not (queue and edited)
+    cached_source = (job_copy.get("insight") or {}).get("source") if isinstance(job_copy.get("insight"), dict) else ""
+    if queue and not edited and cached_source != "ollama" and insight.engine_status().get("available"):
+        rebuild = True
+    if rebuild:
+        match = score_job(job_copy, profile_copy)
+        built = insight.compose(job_copy, profile_copy, match, use_model=True)
+    else:
+        built = job_copy.get("insight")
     with locked():
         store = load_store()
         profile = load_profile()
         job = store["jobs"].get(job_id)
         if not job:
             return None
-        match = score_job(job, profile)
-        cover, answers = build_draft(job, profile, match["skill_hits"])
-        job["draft"] = {
-            "cover_note": cover,
-            "answers": answers,
-            "warnings": profile_warnings(profile),
-            "generated_at": now_iso(),
-            "edited": False,
-        }
-        if job.get("status") in {"new", "skipped"}:
+        if not built or built.get("profile_fp") != insight.profile_fp(profile):
+            match = score_job(job, profile)
+            built = insight.compose(job, profile, match, use_model=False)
+        replace = force and not (queue and edited)
+        _attach_draft(job, built, profile, replace=replace)
+        if mark_drafted and (job.get("status") or "new") in {"new", "archived"}:
             job["status"] = "drafted"
+        if queue:
+            _queue_job(job)
         save_store(store)
         return public_job(job, profile, detail=True)
+
+
+def _queue_job(job):
+    if not job.get("draft"):
+        raise ValueError("Could not prepare a draft for this job.")
+    status = job.get("status") or "new"
+    note_time = now_iso()
+    if status in TRACKED:
+        job["agent"] = {
+            "mode": "supervised",
+            "added_at": note_time,
+            "stopped_at": status,
+            "note": "This job is already in your tracker. Nothing was submitted.",
+        }
+        return
+    job["status"] = "ready"
+    job["agent"] = {
+        "mode": "supervised",
+        "added_at": note_time,
+        "stopped_at": "ready",
+        "note": "Supervised run stopped here for you to review. Nothing was submitted.",
+    }
+
+
+def job_detail(job_id):
+    return prepare_job(job_id, force=False, queue=False, mark_drafted=False)
+
+
+def generate_draft(job_id):
+    return prepare_job(job_id, force=True, queue=False, mark_drafted=True)
+
+
+def add_to_queue(job_id):
+    return prepare_job(job_id, force=False, queue=True, mark_drafted=False)
 
 
 def save_draft(job_id, payload):
     if not valid_id(job_id):
         return None
-    cover = payload.get("cover_note") if isinstance(payload, dict) else None
-    if not isinstance(cover, str) or not cover.strip():
-        raise ValueError("Write a cover note before saving the draft.")
+    if not isinstance(payload, dict):
+        raise ValueError("Send JSON.")
+    cover = payload.get("cover_note") if isinstance(payload.get("cover_note"), str) else ""
+    summary = payload.get("resume_summary") if isinstance(payload.get("resume_summary"), str) else ""
+    if not cover.strip() and not summary.strip():
+        raise ValueError("Write a cover note or resume summary before saving the draft.")
     answers = []
     for item in (payload.get("answers") or [])[:6]:
         if not isinstance(item, dict):
@@ -1022,21 +1148,32 @@ def save_draft(job_id, payload):
         question = one_line(item.get("question"), 160) or "Answer"
         answer = plain_text(item.get("answer") or "", limit=2000)
         answers.append({"question": question, "answer": answer})
+    bullets = []
+    for item in (payload.get("bullet_emphasis") or [])[:8]:
+        if isinstance(item, str) and item.strip():
+            bullets.append(plain_text(item, limit=400))
     with locked():
         store = load_store()
         profile = load_profile()
         job = store["jobs"].get(job_id)
         if not job:
             return None
-        previous = job.get("draft") or {}
+        previous = job.get("draft") if isinstance(job.get("draft"), dict) else {}
+        cached = job.get("insight") if isinstance(job.get("insight"), dict) else {}
         job["draft"] = {
             "cover_note": cover.strip()[:5000],
+            "resume_summary": plain_text(summary, limit=2000),
+            "bullet_emphasis": bullets,
+            "fit": list(previous.get("fit") or cached.get("fit") or []),
+            "gaps": list(previous.get("gaps") or cached.get("gaps") or []),
             "answers": answers,
+            "source": previous.get("source") or cached.get("source") or "builtin",
+            "model": previous.get("model") or cached.get("model") or "",
             "warnings": profile_warnings(profile),
             "generated_at": previous.get("generated_at") or now_iso(),
             "edited": True,
         }
-        if job.get("status") in {"new", "skipped"}:
+        if job.get("status") in {"new", "archived"}:
             job["status"] = "drafted"
         save_store(store)
         return public_job(job, profile, detail=True)
@@ -1055,7 +1192,14 @@ def set_status(job_id, status):
             return None
         if status in {"drafted", "ready"} and not job.get("draft"):
             raise ValueError("Save a draft before marking it drafted or ready.")
+        previous = job.get("status") or "new"
         job["status"] = status
+        if status in TRACKED and not job.get("applied_at"):
+            job["applied_at"] = now_iso()
+        if status == "new":
+            job.pop("agent", None)
+        elif status != "ready" and isinstance(job.get("agent"), dict) and previous == "ready":
+            job["agent"]["stopped_at"] = status
         save_store(store)
         return public_job(job, profile, detail=True)
 
@@ -1106,6 +1250,10 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/api/state":
                 self._send_json(200, current_state())
                 return
+            if method == "GET" and path == "/api/meta":
+                with locked():
+                    self._send_json(200, desk_meta(load_store(), load_profile()))
+                return
             if method == "PUT" and path == "/api/profile":
                 self._send_json(200, update_profile(self._read_json()))
                 return
@@ -1155,6 +1303,13 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         self._send_json(200, job)
                     return
+                if method == "POST" and action == "add":
+                    job = add_to_queue(job_id)
+                    if job is None:
+                        self._send_json(404, {"error": "That job is not in the local list."})
+                    else:
+                        self._send_json(200, job)
+                    return
                 if method == "POST" and action == "opened":
                     job = mark_opened(job_id)
                     if job is None:
@@ -1165,6 +1320,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "Not found."})
         except ValueError as exc:
             self._send_json(400, {"error": str(exc)})
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except Exception:
             traceback.print_exc()
             self._send_json(500, {"error": "Something went wrong on this computer."})
@@ -1242,6 +1399,15 @@ def serve():
         httpd.daemon_threads = True
         print(f"Fresh Roles is running at http://{host}:{port}", flush=True)
         print("It drafts applications on this computer. It does not sign in or submit them.", flush=True)
+        def _warm():
+            info = insight.warmup()
+            if info.get("available"):
+                where = "on this Mac's GPU" if info.get("gpu") else "on this Mac"
+                print(f"Local model {info.get('model')} is available via Ollama {where}.", flush=True)
+            else:
+                print("No local model responded. Match notes use the built-in matcher.", flush=True)
+
+        threading.Thread(target=_warm, name="local-model-warmup", daemon=True).start()
         print("Press Ctrl+C to stop.", flush=True)
         try:
             httpd.serve_forever()

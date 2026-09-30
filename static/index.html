@@ -13,7 +13,8 @@
         <span class="mark" aria-hidden="true">FR</span>
         <div>
           <h1>Fresh Roles</h1>
-          <p class="tagline">New public job posts, matched to your profile. You submit each application yourself.</p>
+          <p class="tagline">A local job desk. Click a match to open the original posting in a new tab. You still submit each application yourself.</p>
+          <p class="tagline"><a class="app-link" href="http://127.0.0.1:8765">http://127.0.0.1:8765</a></p>
         </div>
       </div>
       <div class="top-actions">
@@ -24,8 +25,15 @@
   </header>
   <p class="limit" id="limit-note">
     This app does not sign in anywhere and does not submit applications.
-    Refresh finds new public posts. Open the employer link and apply there.
+    A job title opens the original posting in a new tab. Add puts it in a supervised queue and stops at Ready.
   </p>
+  <div class="deskbar">
+    <p id="ai-note" class="desk-note">Checking the local model…</p>
+    <p id="week-note" class="desk-note">This week: 0 applied.</p>
+    <label class="week-field">Weekly target
+      <input id="weekly-target" type="number" min="0" max="100" value="5" />
+    </label>
+  </div>
   <p id="banner" class="banner" hidden></p>
   <main class="layout">
     <section class="panel" aria-labelledby="profile-heading">
@@ -90,7 +98,7 @@
 
     <section class="panel list-panel" aria-labelledby="list-heading">
       <div class="list-head">
-        <h2 id="list-heading">New posts</h2>
+        <h2 id="list-heading">Matches</h2>
         <p id="list-count" class="hint"></p>
       </div>
       <div class="tabs" role="toolbar" aria-label="Status">
@@ -98,8 +106,16 @@
         <button type="button" data-status="drafted">Drafted <span data-count="drafted">0</span></button>
         <button type="button" data-status="ready">Ready <span data-count="ready">0</span></button>
         <button type="button" data-status="applied">Applied <span data-count="applied">0</span></button>
-        <button type="button" data-status="skipped">Skipped <span data-count="skipped">0</span></button>
+        <button type="button" data-status="interviewing">Interviewing <span data-count="interviewing">0</span></button>
+        <button type="button" data-status="offer">Offer <span data-count="offer">0</span></button>
+        <button type="button" data-status="rejected">Rejected <span data-count="rejected">0</span></button>
+        <button type="button" data-status="archived">Archived <span data-count="archived">0</span></button>
         <button type="button" data-status="all">All <span data-count="all">0</span></button>
+      </div>
+      <div class="queue-panel" aria-labelledby="queue-heading">
+        <h3 id="queue-heading">Supervised queue</h3>
+        <p id="queue-note" class="hint"></p>
+        <div id="queue-list"></div>
       </div>
       <div class="filters">
         <label>Keyword
@@ -125,6 +141,7 @@
     </section>
   </main>
   <footer class="foot">
+    <p>Open this app at <a href="http://127.0.0.1:8765">http://127.0.0.1:8765</a>. Start it with <code>python3 app.py</code> if the page does not load.</p>
     <p>
       Posts come from public feeds. Each job links back to the original listing:
       <a href="https://remotive.com">Remotive</a>,

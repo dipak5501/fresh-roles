@@ -1,8 +1,18 @@
 # Fresh Roles
 
-A local job desk for **new public postings**. It matches jobs to a profile you edit, drafts a short application note, and keeps a queue of what you still need to do.
+Open the app: [http://127.0.0.1:8765](http://127.0.0.1:8765)
 
-You send every application yourself on the employer site.
+If that page does not load, start it from this folder:
+
+```bash
+python3 app.py
+```
+
+Then open [http://127.0.0.1:8765](http://127.0.0.1:8765) again. It stays on this computer. It is not a public website.
+
+A local job desk for **new public postings**. It scores each job against your profile, explains the fit and the gaps, drafts a job-specific resume emphasis and cover note, and keeps a supervised queue.
+
+You send every application yourself. Clicking a job opens the original posting in a new tab. This app does not submit it.
 
 ## Run it
 
@@ -28,18 +38,28 @@ The site stays on this computer (`127.0.0.1` only). Stop it with Ctrl+C.
 
 1. Edit the example profile, or use **Upload resume** (PDF, DOCX, `.txt`, or `.md`). Parsing stays on this computer. The original file is not saved. Review the fields, then click **Save profile**. Every extracted field stays editable.
 2. Click **Refresh new jobs**. The first pull can take half a minute.
-3. Open a job. Read the match reasons. Click **Draft application note**, edit it, and copy it.
-4. Click **Open the application page** and submit on that site yourself.
-5. Mark the job **Ready** when the note looks right, **Applied** only after you have submitted it, or **Skipped**.
+3. Click a job title. The original posting opens in a new tab, and the match stays on this page: score, why it fits, gaps, and a tailored draft.
+4. Use **Review match** if you only want the desk panel. Use **Add to supervised queue** when you want a prepared draft. That run stops at **Ready**. It does not submit anything.
+5. Open the original posting and submit it yourself. Then set the tracker to **Applied**, **Interviewing**, **Offer received**, **Rejected**, or **Archived**.
 
-Statuses: **new**, **drafted**, **ready**, **applied**, **skipped**.
+Statuses: **new**, **drafted**, **ready**, **applied**, **interviewing**, **offer**, **rejected**, **archived**. Older **skipped** jobs are kept as **archived**.
+
+The weekly target is a reminder. It does not block the queue.
+
+Gaps are skills the posting emphasizes that are not on your profile. A skill that is only on your resume is not a gap. Drafts use your profile text. They do not invent employers, dates, degrees, or skills.
+
+## Local model
+
+If [Ollama](https://ollama.com) is running on this Mac, Fresh Roles uses an installed model for the match notes and the tailored summary. Resume text is not sent to a remote model. The page says whether a note came from that local model or from the built-in matcher.
+
+On this computer the model is `qwen2.5vl:3b` through Ollama, which loads it on the Apple GPU. If the badge says the built-in matcher, open the Ollama app so it is listening on `127.0.0.1:11434`. You do not need to download another model for the desk to work.
 
 ## What this app does not do
 
 - It does not sign in to JobRight, LinkedIn, Indeed, Greenhouse, or any other site.
 - It does not store a password, cookie, or session.
 - It does not bypass CAPTCHAs.
-- It does not submit, schedule, or send applications for you.
+- It does not submit, schedule, or send applications for you. Supervised mode only prepares jobs you add, then stops so you can review them.
 - It does not keep running a background loop after you close it.
 
 There is no password field. Do not put a password in the profile or the draft.
