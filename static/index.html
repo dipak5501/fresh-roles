@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Fresh Roles</title>
+  <title>Lantern</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="top">
       <div class="brand">
-        <span class="mark" aria-hidden="true">FR</span>
+        <span class="mark" aria-hidden="true">L</span>
         <div>
-          <h1>Fresh Roles</h1>
+          <h1>Lantern</h1>
           <p class="tagline">A local job desk. Click a match to open the original posting in a new tab. You still submit each application yourself.</p>
           <p class="tagline">Paste into the address bar: <code class="app-link">http://127.0.0.1:8765</code></p>
         </div>
@@ -101,6 +101,12 @@
         <h2 id="list-heading">Matches</h2>
         <p id="list-count" class="hint"></p>
       </div>
+      <div class="views" role="tablist" aria-label="Lists">
+        <button type="button" id="view-matches" data-view="matches" aria-pressed="true">Matches</button>
+        <button type="button" id="view-saved" data-view="saved" aria-pressed="false">Saved <span id="saved-count">0</span></button>
+        <button type="button" id="view-applied" data-view="applied" aria-pressed="false">Applied <span id="applied-count">0</span></button>
+      </div>
+      <div id="match-tools">
       <div class="tabs" role="toolbar" aria-label="Status">
         <button type="button" data-status="new" aria-pressed="true">New <span data-count="new">0</span></button>
         <button type="button" data-status="drafted">Drafted <span data-count="drafted">0</span></button>
@@ -130,13 +136,40 @@
         <label>Minimum match
           <input id="filter-score" type="number" min="0" max="100" step="1" value="1" />
         </label>
+        <label>Sort
+          <select id="filter-sort">
+            <option value="newest">Newest</option>
+            <option value="score">Match score</option>
+          </select>
+        </label>
       </div>
       <label class="usa-check">
         <input id="filter-usa" type="checkbox" checked />
         United States only
       </label>
       <p id="usa-note" class="hint">United States only. Jobs in other countries are hidden. US-remote roles stay when the posting does not exclude the US.</p>
-      <p class="hint">Newest posts first. Raise the minimum match to hide weak overlaps. Set it to 0 to see posts with no overlap.</p>
+      <p id="sort-note" class="hint">Newest posts first. Raise the minimum match to hide weak overlaps. Set it to 0 to see posts with no overlap.</p>
+      <section id="gap-summary" class="gap-summary" aria-live="polite"></section>
+      </div>
+      <div id="applied-panel" hidden>
+        <h3>Applied</h3>
+        <p class="hint">Every job you mark with I applied stays in this list on this computer. Changing the status later does not remove it. This app does not submit applications.</p>
+        <p id="applied-summary" class="hint"></p>
+        <div class="filters">
+          <label>Search applied
+            <input id="applied-search" type="search" autocomplete="off" placeholder="Company, title, or note" />
+          </label>
+          <label>Sort
+            <select id="applied-sort">
+              <option value="date">Date applied</option>
+              <option value="company">Company</option>
+              <option value="title">Title</option>
+            </select>
+          </label>
+        </div>
+        <p class="export-row"><a class="btn" href="/api/applications.csv">Download CSV</a></p>
+        <div id="applied-list" class="list"></div>
+      </div>
       <div id="list" class="list"></div>
     </section>
 
@@ -146,7 +179,7 @@
     </section>
   </main>
   <footer class="foot">
-    <p>Paste <code>http://127.0.0.1:8765</code> into the address bar. Start it with <code>python3 app.py</code> if the page does not load.</p>
+    <p>Lantern stays on this computer. Paste <code>http://127.0.0.1:8765</code> into the address bar. Start it with <code>python3 app.py</code> if the page does not load.</p>
     <p>
       Posts come from public feeds. Each job links back to the original listing:
       <a href="https://remotive.com">Remotive</a>,

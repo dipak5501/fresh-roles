@@ -33,6 +33,19 @@ let stateVersion = 0;
 let booted = false;
 let weekApplied = 0;
 let draftDirty = false;
+let applications = [];
+let savedJobs = [];
+let skillGaps = { jobs: 0, gaps: [] };
+let appliedSummary = { total: 0, this_week: 0, by_status: {}, follow_ups_due: 0 };
+let deskView = "matches";
+
+const HISTORY = [
+  ["applied", "Applied"],
+  ["interviewing", "Interviewing"],
+  ["offer", "Offer received"],
+  ["rejected", "Rejected"],
+  ["archived", "Archived"],
+];
 
 function h(tag, attrs, children) {
   const node = document.createElement(tag);
@@ -43,6 +56,7 @@ function h(tag, attrs, children) {
     else if (key === "onkeydown") node.addEventListener("keydown", value);
     else if (key === "oninput") node.addEventListener("input", value);
     else if (key === "onchange") node.addEventListener("change", value);
+    else if (key === "onblur") node.addEventListener("blur", value);
     else node.setAttribute(key, value === true ? "" : String(value));
   }
   const kids = children == null ? [] : Array.isArray(children) ? children : [children];
@@ -158,6 +172,7 @@ function filtersFromForm() {
     status: statusFilter,
     min_score: Number(document.getElementById("filter-score").value || 0),
     usa_only: document.getElementById("filter-usa").checked,
+    sort: document.getElementById("filter-sort") ? document.getElementById("filter-sort").value : "newest",
   };
 }
 
@@ -183,6 +198,8 @@ function fillProfile(profile) {
   document.getElementById("filter-score").value = String(filters.min_score || 0);
   const usa = document.getElementById("filter-usa");
   if (usa) usa.checked = filters.usa_only !== false;
+  const sort = document.getElementById("filter-sort");
+  if (sort && document.activeElement !== sort) sort.value = filters.sort === "score" ? "score" : "newest";
   statusFilter = filters.status || "new";
   renderUsaNote();
 }
@@ -209,6 +226,10 @@ function renderWarnings() {
 
 function applyState(data, refillProfile) {
   jobs = data.jobs || [];
+  savedJobs = data.saved || [];
+  applications = data.applications || [];
+  skillGaps = data.skill_gaps || { jobs: 0, gaps: [] };
+  appliedSummary = (data.meta && data.meta.applied_list) || appliedSummary;
   lastNewIds = new Set(data.meta?.last_new_ids || []);
   const when = data.meta?.last_refresh_at
     ? `Last refresh ${new Date(data.meta.last_refresh_at).toLocaleString()}`
@@ -220,6 +241,8 @@ function applyState(data, refillProfile) {
   renderWarnings();
   renderTabs();
   renderQueue();
+  renderGapSummary();
+  renderViewCounts();
   renderList();
   refreshDetailMeta();
 }
@@ -321,24 +344,315 @@ function renderUsaNote() {
     : "United States filter is off. Jobs from other countries can appear.";
 }
 
+function todayISO() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return now.getFullYear() + "-" + month + "-" + day;
+}
+
+function formatIso(value) {
+  if (!value) return "Date unknown";
+  const then = new Date(value);
+  if (Number.isNaN(then.getTime())) return value;
+  return then.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function isApplied(jobId) {
+  return applications.some((row) => row.job_id === jobId);
+}
+
+function renderViewCounts() {
+  const saved = document.getElementById("saved-count");
+  const applied = document.getElementById("applied-count");
+  if (saved) saved.textContent = String(savedJobs.length);
+  if (applied) applied.textContent = String(applications.length);
+}
+
+function renderGapSummary() {
+  const root = document.getElementById("gap-summary");
+  if (!root) return;
+  const gaps = (skillGaps && skillGaps.gaps) || [];
+  const intro = gaps.length
+    ? "Across " + (skillGaps.jobs || 0) + " United States postings. These are skills the postings emphasize that are not on your profile."
+    : "No repeated skill gaps in the current United States matches. Skills that are only on your profile are not counted.";
+  root.replaceChildren(
+    h("h3", {}, "Skills often missing in US matches"),
+    h("p", { class: "hint" }, intro),
+    gaps.length ? h("ul", { class: "gap-pills" }, gaps.map((gap) => h("li", {}, gap.skill + " · " + gap.count))) : null
+  );
+}
+
+function renderAppliedSummary() {
+  const box = document.getElementById("applied-summary");
+  if (!box) return;
+  const by = appliedSummary.by_status || {};
+  const due = Number(appliedSummary.follow_ups_due || 0);
+  box.textContent =
+    "Total " +
+    (appliedSummary.total || 0) +
+    " · This week " +
+    (appliedSummary.this_week || 0) +
+    " · Applied " +
+    (by.applied || 0) +
+    " · Interviewing " +
+    (by.interviewing || 0) +
+    " · Offer " +
+    (by.offer || 0) +
+    " · Rejected " +
+    (by.rejected || 0) +
+    " · Archived " +
+    (by.archived || 0) +
+    (due ? " · " + due + " follow-up" + (due === 1 ? "" : "s") + " due" : "");
+}
+
+function setView(view) {
+  deskView = view;
+  const applied = view === "applied";
+  const matches = view === "matches";
+  const tools = document.getElementById("match-tools");
+  const panel = document.getElementById("applied-panel");
+  const list = document.getElementById("list");
+  if (tools) tools.hidden = applied;
+  if (panel) panel.hidden = !applied;
+  if (list) list.hidden = applied;
+  const tabs = document.querySelector(".tabs");
+  const queue = document.querySelector(".queue-panel");
+  const usa = document.querySelector(".usa-check");
+  const usaNote = document.getElementById("usa-note");
+  const sortNote = document.getElementById("sort-note");
+  const gaps = document.getElementById("gap-summary");
+  if (tabs) tabs.hidden = !matches;
+  if (queue) queue.hidden = !matches;
+  if (usa) usa.hidden = !matches;
+  if (usaNote) usaNote.hidden = !matches;
+  if (gaps) gaps.hidden = !matches;
+  if (sortNote) sortNote.hidden = applied;
+  const heading = document.getElementById("list-heading");
+  if (heading) heading.textContent = view === "saved" ? "Saved" : view === "applied" ? "Applied" : "Matches";
+  ["view-matches", "view-saved", "view-applied"].forEach((id) => {
+    const button = document.getElementById(id);
+    if (button) button.setAttribute("aria-pressed", String(button.getAttribute("data-view") === view));
+  });
+  renderViewCounts();
+  if (applied) renderApplied();
+  else renderList();
+}
+
+function renderApplied() {
+  renderAppliedSummary();
+  renderViewCounts();
+  const root = document.getElementById("applied-list");
+  if (!root) return;
+  const search = document.getElementById("applied-search");
+  const sortBox = document.getElementById("applied-sort");
+  const query = (search && search.value ? search.value : "").trim().toLowerCase();
+  const sort = sortBox && sortBox.value ? sortBox.value : "date";
+  const today = todayISO();
+  let rows = applications.slice();
+  if (query) {
+    rows = rows.filter((row) => {
+      const blob = [row.title, row.company, row.location, row.note].join(" ").toLowerCase();
+      return blob.includes(query);
+    });
+  }
+  rows.sort((a, b) => {
+    if (sort === "company") {
+      return (a.company || "").localeCompare(b.company || "") || (b.applied_at || "").localeCompare(a.applied_at || "");
+    }
+    if (sort === "title") {
+      return (a.title || "").localeCompare(b.title || "") || (b.applied_at || "").localeCompare(a.applied_at || "");
+    }
+    return (b.applied_at || "").localeCompare(a.applied_at || "");
+  });
+  const count = document.getElementById("list-count");
+  if (count && deskView === "applied") count.textContent = rows.length + " in Applied";
+  root.replaceChildren();
+  if (!rows.length) {
+    root.append(
+      h(
+        "p",
+        { class: "empty" },
+        applications.length
+          ? "No applied jobs match that search."
+          : "No applied jobs yet. Open a match and click I applied after you submit it yourself."
+      )
+    );
+    return;
+  }
+  for (const row of rows) {
+    const url = originalUrl(row);
+    const due = Boolean(row.follow_up_on && row.follow_up_on <= today);
+    const title = url
+      ? h(
+          "a",
+          { class: "job-title", href: url, target: "_blank", rel: "noopener noreferrer" },
+          row.title || "Untitled role"
+        )
+      : h("span", { class: "job-title missing" }, row.title || "Untitled role");
+    const status = h(
+      "select",
+      {
+        "aria-label": "Status",
+        onchange: (event) => updateApplication(row.job_id, { status: event.target.value }),
+      },
+      HISTORY.map(([value, label]) => h("option", { value, selected: value === row.status }, label))
+    );
+    root.append(
+      h("article", { class: "job applied-row" + (due ? " due" : "") }, [
+        h("div", { class: "job-top" }, [
+          title,
+          h("span", { class: "score " + band(row.score) }, String(row.score || 0)),
+        ]),
+        h("p", { class: "company" }, row.company || "Company unknown"),
+        h("p", { class: "fine" }, [
+          (row.location || "Location unknown") + " · Applied " + formatIso(row.applied_at) + (due ? " · Follow-up due" : ""),
+        ]),
+        url ? null : h("p", { class: "missing-link" }, "The original link is missing for this posting."),
+        h("label", { class: "tracker-label" }, ["Status", status]),
+        h("label", {}, [
+          "Note",
+          h("input", {
+            type: "text",
+            maxlength: "500",
+            value: row.note || "",
+            autocomplete: "off",
+            onblur: (event) => {
+              if ((event.target.value || "") !== (row.note || "")) {
+                updateApplication(row.job_id, { note: event.target.value });
+              }
+            },
+          }),
+        ]),
+        h("label", {}, [
+          "Follow-up",
+          h("input", {
+            type: "date",
+            value: row.follow_up_on || "",
+            onchange: (event) => updateApplication(row.job_id, { follow_up_on: event.target.value }),
+          }),
+        ]),
+      ])
+    );
+  }
+}
+
+async function updateApplication(jobId, body) {
+  try {
+    const response = await fetch("/api/applications/" + encodeURIComponent(jobId), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await readJson(response);
+    applications = data.applications || applications;
+    appliedSummary = data.summary || appliedSummary;
+    if (data.summary) weekApplied = Number(data.summary.this_week || 0);
+    if (data.job) {
+      mergeJob(data.job);
+      const savedIndex = savedJobs.findIndex((item) => item.id === data.job.id);
+      if (savedIndex !== -1) savedJobs[savedIndex] = Object.assign({}, savedJobs[savedIndex], data.job);
+      if (detail && detail.id === data.job.id) {
+        detail.status = data.job.status;
+        detail.applied_at = data.job.applied_at;
+        const pill = document.getElementById("status-pill");
+        if (pill) {
+          pill.textContent = data.job.status;
+          pill.className = "pill " + data.job.status;
+        }
+        const tracker = document.getElementById("tracker-status");
+        if (tracker) tracker.value = data.job.status;
+      }
+    }
+    renderWeek();
+    renderTabs();
+    renderViewCounts();
+    renderApplied();
+  } catch (error) {
+    showBanner(error.message, true);
+  }
+}
+
+async function reloadApplications() {
+  const response = await fetch("/api/applications");
+  const data = await readJson(response);
+  applications = data.applications || [];
+  appliedSummary = data.summary || appliedSummary;
+  if (data.summary) weekApplied = Number(data.summary.this_week || 0);
+  renderWeek();
+  renderViewCounts();
+  if (deskView === "applied") renderApplied();
+}
+
+async function toggleSaved(job) {
+  const next = !job.saved;
+  const response = await fetch("/api/jobs/" + encodeURIComponent(job.id) + "/save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ saved: next }),
+  });
+  const updated = await readJson(response);
+  mergeJob(updated);
+  if (detail && detail.id === updated.id) detail.saved = updated.saved;
+  if (updated.saved) {
+    const index = savedJobs.findIndex((item) => item.id === updated.id);
+    if (index === -1) savedJobs.push(updated);
+    else savedJobs[index] = Object.assign({}, savedJobs[index], updated);
+  } else {
+    savedJobs = savedJobs.filter((item) => item.id !== updated.id);
+  }
+  renderViewCounts();
+  renderList();
+  const button = document.getElementById("save-job");
+  if (button && detail && detail.id === updated.id) button.textContent = updated.saved ? "Saved" : "Save";
+}
+
 function renderList() {
+  if (deskView === "applied") {
+    renderApplied();
+    return;
+  }
   const root = document.getElementById("list");
   const filters = filtersFromForm();
-  const matched = jobs
+  const source = deskView === "saved" ? savedJobs : jobs;
+  if (deskView === "saved") {
+    filters.status = "all";
+    filters.usa_only = false;
+  }
+  const sortMode = filters.sort === "score" ? "score" : "newest";
+  const matched = source
     .filter((job) => matches(job, filters))
     .slice()
-    .sort((a, b) => (b.published_ts || 0) - (a.published_ts || 0) || (b.score || 0) - (a.score || 0));
-  const usaOn = filters.usa_only !== false;
-  document.getElementById("list-count").textContent = jobs.length
-    ? `${matched.length} shown · newest first${usaOn ? " · United States only" : ""}`
+    .sort((a, b) => {
+      if (sortMode === "score") return (b.score || 0) - (a.score || 0) || (b.published_ts || 0) - (a.published_ts || 0);
+      return (b.published_ts || 0) - (a.published_ts || 0) || (b.score || 0) - (a.score || 0);
+    });
+  const usaOn = deskView === "matches" && filters.usa_only !== false;
+  const sortLabel = sortMode === "score" ? "highest match first" : "newest first";
+  document.getElementById("list-count").textContent = source.length
+    ? `${matched.length} shown · ${sortLabel}${usaOn ? " · United States only" : ""}`
     : usaOn
       ? "United States only"
       : "";
+  const sortNote = document.getElementById("sort-note");
+  if (sortNote && deskView === "matches") {
+    sortNote.textContent =
+      sortMode === "score"
+        ? "Highest match first. Raise the minimum match to hide weak overlaps. Set it to 0 to see posts with no overlap."
+        : "Newest posts first. Raise the minimum match to hide weak overlaps. Set it to 0 to see posts with no overlap.";
+  }
   renderUsaNote();
   root.replaceChildren();
-  if (!matched.length) {
+    if (!matched.length) {
     let message = "Nothing in this view. Try All, or lower the minimum match.";
-    if (!jobs.length && loadingJobs) message = "Looking for new public postings…";
+    if (deskView === "saved") message = "No saved jobs yet. Use Save on a match. Saved jobs stay separate from Applied.";
+    else if (!jobs.length && loadingJobs) message = "Looking for new public postings…";
     else if (!jobs.length) message = "No posts stored yet. Use Refresh new jobs.";
     root.append(h("p", { class: "empty" }, message));
     return;
@@ -413,18 +727,32 @@ function renderList() {
           job.gaps_ready && job.gaps && job.gaps.length
             ? h("p", { class: "gaps-line" }, "Gaps: " + job.gaps.slice(0, 3).join(", "))
             : null,
-          h(
-            "button",
-            {
-              class: "btn ghost tiny",
-              type: "button",
-              onclick: (event) => {
-                event.stopPropagation();
-                selectJob(job.id);
+          h("div", { class: "actions" }, [
+            h(
+              "button",
+              {
+                class: "btn ghost tiny",
+                type: "button",
+                onclick: (event) => {
+                  event.stopPropagation();
+                  selectJob(job.id);
+                },
               },
-            },
-            "Review match"
-          ),
+              "Review match"
+            ),
+            h(
+              "button",
+              {
+                class: "btn ghost tiny",
+                type: "button",
+                onclick: (event) => {
+                  event.stopPropagation();
+                  toggleSaved(job);
+                },
+              },
+              job.saved ? "Saved" : "Save"
+            ),
+          ]),
         ]
       )
     );
@@ -589,6 +917,22 @@ function renderDetail() {
     h("div", { class: "actions" }, [
       h("button", { class: "btn gold", type: "button", id: "add-btn", onclick: addToQueue }, "Add to supervised queue"),
       h("button", { class: "btn", type: "button", id: "draft-btn", onclick: generateDraft }, draft.cover_note || draft.resume_summary ? "Draft again" : "Draft materials"),
+      h(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          id: "applied-btn",
+          disabled: isApplied(job.id),
+          onclick: () => setStatus("applied"),
+        },
+        isApplied(job.id) ? "In Applied" : "I applied"
+      ),
+      h(
+        "button",
+        { class: "btn ghost", type: "button", id: "save-job", onclick: () => toggleSaved(job) },
+        job.saved ? "Saved" : "Save"
+      ),
     ]),
     h("label", { class: "tracker-label" }, ["Tracker", tracker]),
     h("div", { class: "draft-box", id: "draft-box" }, [
@@ -745,9 +1089,13 @@ async function setStatus(status) {
   if (!detail) return;
   if (status === "applied") {
     const confirmed = confirm(
-      "Mark this as applied only after you submit on the employer site. This app does not submit it for you."
+      "Mark this as applied only after you submit on the employer site. Lantern does not submit it for you."
     );
-    if (!confirmed) return;
+    if (!confirmed) {
+      const tracker = document.getElementById("tracker-status");
+      if (tracker && detail) tracker.value = detail.status;
+      return;
+    }
   }
   try {
     if (document.getElementById("cover")) await saveDraft(true);
@@ -763,9 +1111,15 @@ async function setStatus(status) {
     renderQueue();
     renderList();
     renderDetail();
-    reloadWeek();
+    await reloadApplications();
+    if (status === "applied") {
+      showBanner("Saved to your Applied list. Nothing was submitted.", false);
+      setView("applied");
+    }
   } catch (error) {
     showBanner(error.message, true);
+    const tracker = document.getElementById("tracker-status");
+    if (tracker && detail) tracker.value = detail.status;
   }
 }
 
@@ -840,8 +1194,14 @@ async function persist(gen) {
     const data = await readJson(response);
     if (gen !== saveGen || version !== stateVersion) return;
     jobs = data.jobs || jobs;
+    savedJobs = data.saved || savedJobs;
+    applications = data.applications || applications;
+    skillGaps = data.skill_gaps || skillGaps;
+    appliedSummary = (data.meta && data.meta.applied_list) || appliedSummary;
     document.getElementById("save-state").textContent = "Saved";
     renderTabs();
+    renderGapSummary();
+    renderViewCounts();
     renderList();
     refreshDetailMeta();
     renderWarnings();
@@ -927,6 +1287,21 @@ function bind() {
       scheduleSave();
     });
   });
+  document.querySelectorAll(".views button").forEach((button) => {
+    button.addEventListener("click", () => setView(button.getAttribute("data-view")));
+  });
+  const appliedSearch = document.getElementById("applied-search");
+  if (appliedSearch) appliedSearch.addEventListener("input", renderApplied);
+  const appliedSort = document.getElementById("applied-sort");
+  if (appliedSort) appliedSort.addEventListener("change", renderApplied);
+  const filterSort = document.getElementById("filter-sort");
+  if (filterSort) {
+    filterSort.addEventListener("change", () => {
+      listLimit = 40;
+      renderList();
+      scheduleSave();
+    });
+  }
   document.getElementById("refresh").addEventListener("click", refreshJobs);
 }
 

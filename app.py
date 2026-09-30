@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Fresh Roles: search new public job posts and draft notes locally.
+"""Lantern: search new public job posts and draft notes locally.
 
 This program does not sign in anywhere and does not submit applications.
 """
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import re
 import sys
@@ -45,7 +47,9 @@ STATUSES = (
 )
 LEGACY_STATUS = {"skipped": "archived"}
 TRACKED = {"applied", "interviewing", "offer"}
-USER_AGENT = "FreshRoles/1.0 (personal local job search; links back to the source listing)"
+HISTORY_STATUSES = ("applied", "interviewing", "offer", "rejected", "archived")
+ENTRY_STATUSES = {"applied", "interviewing", "offer"}
+USER_AGENT = "Lantern/1.0 (personal local job search; links back to the source listing)"
 
 SOURCES = {
     "remotive": {
@@ -90,9 +94,10 @@ DEFAULT_PROFILE = {
         "role": "",
         "location": "",
         "status": "new",
-        "min_score": 1,
-        "usa_only": True,
-    },
+            "min_score": 1,
+            "usa_only": True,
+            "sort": "newest",
+        },
 }
 
 LOCATION_ALIASES = {
@@ -205,7 +210,13 @@ def as_list(value, limit=30, item_limit=60):
 
 
 def empty_store():
-    return {"jobs": {}, "sources": {}, "last_new_ids": [], "last_refresh_at": None}
+    return {
+        "jobs": {},
+        "sources": {},
+        "last_new_ids": [],
+        "last_refresh_at": None,
+        "applications": {},
+    }
 
 
 def load_store():
@@ -220,6 +231,8 @@ def load_store():
     data.setdefault("sources", {})
     data.setdefault("last_new_ids", [])
     data.setdefault("last_refresh_at", None)
+    if not isinstance(data.get("applications"), dict):
+        data["applications"] = {}
     migrated = False
     for job in data["jobs"].values():
         if not isinstance(job, dict):
@@ -278,6 +291,7 @@ def normalize_profile(raw):
             "status": status,
             "min_score": min_score,
             "usa_only": True if "usa_only" not in filters else bool(filters.get("usa_only")),
+            "sort": filters.get("sort") if filters.get("sort") in {"newest", "score"} else "newest",
         },
     }
 
@@ -1089,10 +1103,13 @@ def trim_jobs(store):
     def sort_key(job):
         return (rank.get(job.get("status"), 2), job.get("first_seen_at") or "")
 
+    protected = set(_applications(store))
     for job in sorted(jobs.values(), key=sort_key):
         if len(jobs) <= MAX_JOBS:
             break
-        if job.get("status") in {"drafted", "ready", "interviewing", "offer"}:
+        if job.get("saved") or job.get("id") in protected:
+            continue
+        if job.get("status") in {"drafted", "ready", "applied", "interviewing", "offer"}:
             continue
         jobs.pop(job.get("id"), None)
 
@@ -1245,6 +1262,8 @@ def public_job(job, profile, detail=False, profile_fp=None):
         "published_ts": job.get("published_ts") or 0,
         "first_seen_at": job.get("first_seen_at"),
         "status": job.get("status") or "new",
+        "saved": bool(job.get("saved")),
+        "applied_at": job.get("applied_at") or "",
         "score": match["score"],
         "match_reasons": fit,
         "gaps": gaps,
@@ -1306,15 +1325,211 @@ def week_start():
     return start.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def applied_this_week(store):
-    start_ts = int(week_start().timestamp())
-    count = 0
-    for job in store["jobs"].values():
-        if (job.get("status") or "") not in TRACKED:
+def _applications(store):
+    apps = store.get("applications")
+    if not isinstance(apps, dict):
+        apps = {}
+        store["applications"] = apps
+    return apps
+
+
+def _clean_date(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        raise ValueError("Use a follow-up date as YYYY-MM-DD.")
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("That follow-up date is not a real calendar day.") from exc
+    return text
+
+
+def _write_application(store, job, profile, status, note=None, follow_up_on=None):
+    """Snapshot a job into the applied history. The first applied time is kept."""
+    apps = _applications(store)
+    status = status if status in HISTORY_STATUSES else "applied"
+    existing = apps.get(job["id"])
+    if not isinstance(existing, dict):
+        match = score_job(job, profile)
+        applied_at = job.get("applied_at") or now_iso()
+        job["applied_at"] = applied_at
+        existing = {
+            "job_id": job["id"],
+            "title": one_line(job.get("title"), 180),
+            "company": one_line(job.get("company"), 180),
+            "location": one_line(job.get("location"), 180),
+            "original_url": external_url(job),
+            "score": int(match["score"]),
+            "applied_at": applied_at,
+            "status": status,
+            "note": "",
+            "follow_up_on": "",
+        }
+        apps[job["id"]] = existing
+    else:
+        existing["status"] = status
+        existing["title"] = one_line(job.get("title") or existing.get("title"), 180)
+        existing["company"] = one_line(job.get("company") or existing.get("company"), 180)
+        existing["location"] = one_line(job.get("location") or existing.get("location"), 180)
+        url = external_url(job)
+        if url:
+            existing["original_url"] = url
+        if not existing.get("applied_at"):
+            existing["applied_at"] = job.get("applied_at") or now_iso()
+        job["applied_at"] = existing["applied_at"]
+    if note is not None:
+        existing["note"] = plain_text(note, limit=500)
+    if follow_up_on is not None:
+        existing["follow_up_on"] = follow_up_on
+    return existing
+
+
+def _sync_application_history(store, profile):
+    changed = False
+    for job in list(store["jobs"].values()):
+        if not isinstance(job, dict) or not job.get("id"):
             continue
-        if parse_ts(job.get("applied_at")) >= start_ts:
-            count += 1
-    return count
+        status = job.get("status") or "new"
+        if status not in ENTRY_STATUSES:
+            continue
+        if job["id"] in _applications(store):
+            continue
+        _write_application(store, job, profile, status)
+        changed = True
+    if changed:
+        save_store(store)
+    return changed
+
+
+def public_applications(store):
+    rows = []
+    jobs = store.get("jobs") if isinstance(store.get("jobs"), dict) else {}
+    for job_id, rec in _applications(store).items():
+        if not isinstance(rec, dict):
+            continue
+        job = jobs.get(job_id)
+        url = str(rec.get("original_url") or "")
+        title = rec.get("title") or ""
+        company = rec.get("company") or ""
+        location = rec.get("location") or ""
+        if isinstance(job, dict):
+            live = external_url(job)
+            if live:
+                url = live
+            title = job.get("title") or title
+            company = job.get("company") or company
+            location = job.get("location") or location
+        status = rec.get("status") or "applied"
+        if status not in HISTORY_STATUSES:
+            status = "applied"
+        rows.append(
+            {
+                "job_id": job_id,
+                "title": title,
+                "company": company,
+                "location": location,
+                "original_url": url,
+                "score": int(rec.get("score") or 0),
+                "applied_at": rec.get("applied_at") or "",
+                "status": status,
+                "note": rec.get("note") or "",
+                "follow_up_on": rec.get("follow_up_on") or "",
+                "in_list": isinstance(job, dict),
+            }
+        )
+    rows.sort(key=lambda row: row.get("applied_at") or "", reverse=True)
+    return rows
+
+
+def application_summary(store):
+    counts = {status: 0 for status in HISTORY_STATUSES}
+    start_ts = int(week_start().timestamp())
+    today = datetime.now().astimezone().date().isoformat()
+    this_week = 0
+    due = 0
+    apps = _applications(store)
+    for rec in apps.values():
+        if not isinstance(rec, dict):
+            continue
+        status = rec.get("status") or "applied"
+        if status not in counts:
+            status = "applied"
+        counts[status] += 1
+        if parse_ts(rec.get("applied_at")) >= start_ts:
+            this_week += 1
+        follow = rec.get("follow_up_on") or ""
+        if follow and follow <= today:
+            due += 1
+    return {
+        "total": sum(counts.values()),
+        "this_week": this_week,
+        "by_status": counts,
+        "follow_ups_due": due,
+    }
+
+
+def applications_csv(store):
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(
+        [
+            "title",
+            "company",
+            "location",
+            "original_url",
+            "score",
+            "applied_at",
+            "status",
+            "note",
+            "follow_up_on",
+        ]
+    )
+    for row in public_applications(store):
+        writer.writerow(
+            [
+                row["title"],
+                row["company"],
+                row["location"],
+                row["original_url"],
+                row["score"],
+                row["applied_at"],
+                row["status"],
+                row["note"],
+                row["follow_up_on"],
+            ]
+        )
+    return buffer.getvalue()
+
+
+def skill_gap_summary(store, profile):
+    """Count missing skills across United States matches. No model call."""
+    fp = insight.profile_fp(profile)
+    counts = {}
+    considered = 0
+    for job in store["jobs"].values():
+        if not isinstance(job, dict) or not job_in_united_states(job):
+            continue
+        considered += 1
+        cached = job.get("insight") if isinstance(job.get("insight"), dict) else None
+        if cached and cached.get("profile_fp") == fp and isinstance(cached.get("gaps"), list):
+            gaps = cached.get("gaps") or []
+        else:
+            gaps = insight.heuristic(job, profile, {"score": 0, "reasons": [], "skill_hits": []}).get("gaps") or []
+        for gap in gaps:
+            name = one_line(gap, 60)
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0].lower()))[:8]
+    return {
+        "jobs": considered,
+        "gaps": [{"skill": name, "count": count} for name, count in ranked],
+    }
+
+
+def applied_this_week(store):
+    return application_summary(store)["this_week"]
 
 
 def desk_meta(store, profile):
@@ -1329,14 +1544,26 @@ def desk_meta(store, profile):
 
 
 def state_from(store, profile):
+    _sync_application_history(store, profile)
     fp = insight.profile_fp(profile)
     usa_only = profile.get("filters", {}).get("usa_only", True) is not False
     jobs = []
+    saved = []
     for job in store["jobs"].values():
-        if usa_only and not job_in_united_states(job):
+        if not isinstance(job, dict):
             continue
-        jobs.append(public_job(job, profile, detail=False, profile_fp=fp))
+        keep_saved = bool(job.get("saved"))
+        in_usa = job_in_united_states(job)
+        if usa_only and not in_usa and not keep_saved:
+            continue
+        public = public_job(job, profile, detail=False, profile_fp=fp)
+        if keep_saved:
+            saved.append(public)
+        if usa_only and not in_usa:
+            continue
+        jobs.append(public)
     jobs.sort(key=lambda item: (item.get("published_ts") or 0, item.get("score") or 0), reverse=True)
+    saved.sort(key=lambda item: (item.get("published_ts") or 0, item.get("score") or 0), reverse=True)
     visible_counts = {status: 0 for status in STATUSES}
     for job in jobs:
         visible_counts[job.get("status") or "new"] = visible_counts.get(job.get("status") or "new", 0) + 1
@@ -1356,11 +1583,15 @@ def state_from(store, profile):
                 for job in jobs
                 if isinstance(job.get("agent"), dict) and job.get("status") == "ready"
             ],
+            "applied_list": application_summary(store),
         }
     )
     return {
         "profile": profile,
         "jobs": jobs,
+        "saved": saved,
+        "applications": public_applications(store),
+        "skill_gaps": skill_gap_summary(store, profile),
         "warnings": profile_warnings(profile),
         "meta": meta,
     }
@@ -1518,7 +1749,7 @@ def save_draft(job_id, payload):
         return public_job(job, profile, detail=True)
 
 
-def set_status(job_id, status):
+def set_status(job_id, status, note=None):
     if status not in STATUSES:
         raise ValueError("Unknown status.")
     if not valid_id(job_id):
@@ -1533,14 +1764,78 @@ def set_status(job_id, status):
             raise ValueError("Save a draft before marking it drafted or ready.")
         previous = job.get("status") or "new"
         job["status"] = status
-        if status in TRACKED and not job.get("applied_at"):
-            job["applied_at"] = now_iso()
+        if status == "applied":
+            if not job.get("applied_at"):
+                job["applied_at"] = now_iso()
+            _write_application(store, job, profile, status, note=note)
+        elif status in HISTORY_STATUSES and job_id in _applications(store):
+            _write_application(store, job, profile, status, note=note)
+        elif note is not None and job_id in _applications(store):
+            _applications(store)[job_id]["note"] = plain_text(note, limit=500)
         if status == "new":
             job.pop("agent", None)
         elif status != "ready" and isinstance(job.get("agent"), dict) and previous == "ready":
             job["agent"]["stopped_at"] = status
         save_store(store)
         return public_job(job, profile, detail=True)
+
+
+def update_application(job_id, payload):
+    if not valid_id(job_id):
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError("Send JSON.")
+    with locked():
+        store = load_store()
+        profile = load_profile()
+        rec = _applications(store).get(job_id)
+        if not isinstance(rec, dict):
+            return None
+        job = store["jobs"].get(job_id)
+        if "status" in payload and payload.get("status"):
+            status = LEGACY_STATUS.get(payload.get("status"), payload.get("status"))
+            if status not in HISTORY_STATUSES:
+                raise ValueError("Choose applied, interviewing, offer, rejected, or archived.")
+            rec["status"] = status
+            if isinstance(job, dict):
+                job["status"] = status
+                job["applied_at"] = rec.get("applied_at") or job.get("applied_at") or now_iso()
+                if isinstance(job.get("agent"), dict) and status != "ready":
+                    job["agent"]["stopped_at"] = status
+        if "note" in payload:
+            rec["note"] = plain_text(payload.get("note") or "", limit=500)
+        if "follow_up_on" in payload:
+            rec["follow_up_on"] = _clean_date(payload.get("follow_up_on"))
+        save_store(store)
+        return {
+            "application": next((row for row in public_applications(store) if row["job_id"] == job_id), None),
+            "applications": public_applications(store),
+            "summary": application_summary(store),
+            "job": public_job(job, profile, detail=True) if isinstance(job, dict) else None,
+        }
+
+
+def set_saved(job_id, saved):
+    if not valid_id(job_id):
+        return None
+    with locked():
+        store = load_store()
+        profile = load_profile()
+        job = store["jobs"].get(job_id)
+        if not job:
+            return None
+        job["saved"] = bool(saved)
+        save_store(store)
+        return public_job(job, profile, detail=True)
+
+
+def applications_state():
+    with locked():
+        store = load_store()
+        return {
+            "applications": public_applications(store),
+            "summary": application_summary(store),
+        }
 
 
 def mark_opened(job_id):
@@ -1558,7 +1853,7 @@ def mark_opened(job_id):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FreshRoles/1.0"
+    server_version = "Lantern/1.0"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.log_date_time_string(), fmt % args))
@@ -1593,6 +1888,12 @@ class Handler(BaseHTTPRequestHandler):
                 with locked():
                     self._send_json(200, desk_meta(load_store(), load_profile()))
                 return
+            if method == "GET" and path == "/api/applications.csv":
+                self._send_csv()
+                return
+            if method == "GET" and path == "/api/applications":
+                self._send_json(200, applications_state())
+                return
             if method == "PUT" and path == "/api/profile":
                 self._send_json(200, update_profile(self._read_json()))
                 return
@@ -1610,6 +1911,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200 if report["ok"] else 502, payload)
                 return
             parts = [part for part in path.split("/") if part]
+            if method == "PUT" and len(parts) == 3 and parts[0] == "api" and parts[1] == "applications":
+                result = update_application(parts[2], self._read_json())
+                if result is None:
+                    self._send_json(404, {"error": "That job is not in your Applied list."})
+                else:
+                    self._send_json(200, result)
+                return
             if len(parts) >= 3 and parts[0] == "api" and parts[1] == "jobs":
                 job_id = parts[2]
                 action = parts[3] if len(parts) > 3 else ""
@@ -1636,7 +1944,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if method == "POST" and action == "status":
                     body = self._read_json()
-                    job = set_status(job_id, body.get("status"))
+                    note = body.get("note") if isinstance(body, dict) and "note" in body else None
+                    job = set_status(job_id, body.get("status"), note=note)
                     if job is None:
                         self._send_json(404, {"error": "That job is not in the local list."})
                     else:
@@ -1644,6 +1953,15 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if method == "POST" and action == "add":
                     job = add_to_queue(job_id)
+                    if job is None:
+                        self._send_json(404, {"error": "That job is not in the local list."})
+                    else:
+                        self._send_json(200, job)
+                    return
+                if method == "POST" and action == "save":
+                    body = self._read_json()
+                    saved = True if not isinstance(body, dict) or "saved" not in body else bool(body.get("saved"))
+                    job = set_saved(job_id, saved)
                     if job is None:
                         self._send_json(404, {"error": "That job is not in the local list."})
                     else:
@@ -1697,6 +2015,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_csv(self):
+        with locked():
+            text = applications_csv(load_store())
+        body = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", 'attachment; filename="lantern-applied.csv"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_file(self, path):
         root = STATIC.resolve()
         try:
@@ -1736,7 +2066,7 @@ def serve():
             last_error = exc
             continue
         httpd.daemon_threads = True
-        print(f"Fresh Roles is running at http://{host}:{port}", flush=True)
+        print(f"Lantern is running at http://{host}:{port}", flush=True)
         print("It drafts applications on this computer. It does not sign in or submit them.", flush=True)
         def _warm():
             info = insight.warmup()

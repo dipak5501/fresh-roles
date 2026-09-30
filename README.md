@@ -1,4 +1,4 @@
-# Fresh Roles
+# Lantern
 
 Paste this into the browser address bar: `http://127.0.0.1:8765`
 
@@ -42,17 +42,19 @@ The site stays on this computer (`127.0.0.1` only). Stop it with Ctrl+C.
 2. Click **Refresh new jobs**. The first pull can take half a minute.
 3. Click a job title. The original posting opens in a new tab, and the match stays on this page: score, why it fits, gaps, and a tailored draft.
 4. Use **Review match** if you only want the desk panel. Use **Add to supervised queue** when you want a prepared draft. That run stops at **Ready**. It does not submit anything.
-5. Open the original posting and submit it yourself. Then set the tracker to **Applied**, **Interviewing**, **Offer received**, **Rejected**, or **Archived**.
+5. Open the original posting and submit it yourself. Then click **I applied**. That job stays in the **Applied** list on this computer, with the title, company, location, original link, match score, and the time you marked it.
+6. On that list you can add a note, set a follow-up date, and later change the status to **Interviewing**, **Offer received**, **Rejected**, or **Archived**. The applied time stays. Search and sort the list, and use **Download CSV** to save a copy on this computer.
+7. Use **Save** to bookmark a job without marking it applied. Sort matches by newest or by match score. The keyword box searches the current list.
 
 Statuses: **new**, **drafted**, **ready**, **applied**, **interviewing**, **offer**, **rejected**, **archived**. Older **skipped** jobs are kept as **archived**.
 
-The weekly target is a reminder. It does not block the queue.
+The weekly target is a reminder. It does not block the queue. The Applied list shows how many you marked this week and how many are in each status.
 
-Gaps are skills the posting emphasizes that are not on your profile. A skill that is only on your resume is not a gap. Drafts use your profile text. They do not invent employers, dates, degrees, or skills.
+Gaps are skills the posting emphasizes that are not on your profile. A skill that is only on your resume is not a gap. The matches view also lists which missing skills show up most often in the current United States postings. Drafts use your profile text. They do not invent employers, dates, degrees, or skills.
 
 ## Local model
 
-If [Ollama](https://ollama.com) is running on this Mac, Fresh Roles uses an installed model for the match notes and the tailored summary. Resume text is not sent to a remote model. The page says whether a note came from that local model or from the built-in matcher.
+If [Ollama](https://ollama.com) is running on this Mac, Lantern uses an installed model for the match notes and the tailored summary. Resume text is not sent to a remote model. The page says whether a note came from that local model or from the built-in matcher.
 
 On this computer the model is `qwen2.5vl:3b` through Ollama, which loads it on the Apple GPU. If the badge says the built-in matcher, open the Ollama app so it is listening on `127.0.0.1:11434`. You do not need to download another model for the desk to work.
 
