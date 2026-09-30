@@ -85,7 +85,12 @@ h1 { margin: 0; font-size: 1.7rem; }
 
 .tagline, .meta { margin: 2px 0 0; color: #d9d0c3; font-size: 0.92rem; }
 
-.app-link { color: #f3d48a; font-weight: 650; }
+.app-link {
+  color: #f3d48a;
+  font-weight: 650;
+  background: transparent;
+  font-family: ui-monospace, monospace;
+}
 
 .top-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 
@@ -251,6 +256,15 @@ textarea { resize: vertical; line-height: 1.45; }
 .filters label { font-weight: 600; }
 
 .filters input { margin-bottom: 0; }
+
+.usa-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+
+.usa-check input { width: auto; margin: 0; }
 
 .list { display: flex; flex-direction: column; margin-top: 12px; }
 

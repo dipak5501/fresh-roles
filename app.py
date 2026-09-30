@@ -91,6 +91,7 @@ DEFAULT_PROFILE = {
         "location": "",
         "status": "new",
         "min_score": 1,
+        "usa_only": True,
     },
 }
 
@@ -276,6 +277,7 @@ def normalize_profile(raw):
             "location": clip(filters.get("location"), 80),
             "status": status,
             "min_score": min_score,
+            "usa_only": True if "usa_only" not in filters else bool(filters.get("usa_only")),
         },
     }
 
@@ -428,6 +430,330 @@ def location_matches(preference, job_location):
 def prefers_remote(preference):
     text = (preference or "").strip().lower()
     return text in {"remote", "anywhere", "worldwide", "wfh"} or text.startswith("remote ")
+
+
+_US_ABBREV = re.compile(
+    r"(?<![A-Za-z])(?:AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|IA|ID|IL|IN|KS|KY|LA|MA|MD|ME|"
+    r"MI|MN|MO|MS|MT|NC|ND|NE|NH|NJ|NM|NV|NY|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VA|VT|WA|WI|WV|WY)"
+    r"(?![A-Za-z])"
+)
+_US_STATE_NAMES = (
+    "district of columbia",
+    "washington dc",
+    "new hampshire",
+    "new jersey",
+    "new mexico",
+    "new york",
+    "north carolina",
+    "north dakota",
+    "rhode island",
+    "south carolina",
+    "south dakota",
+    "west virginia",
+    "alabama",
+    "alaska",
+    "arizona",
+    "arkansas",
+    "california",
+    "colorado",
+    "connecticut",
+    "delaware",
+    "florida",
+    "georgia",
+    "hawaii",
+    "idaho",
+    "illinois",
+    "indiana",
+    "iowa",
+    "kansas",
+    "kentucky",
+    "louisiana",
+    "maine",
+    "maryland",
+    "massachusetts",
+    "michigan",
+    "minnesota",
+    "mississippi",
+    "missouri",
+    "montana",
+    "nebraska",
+    "nevada",
+    "ohio",
+    "oklahoma",
+    "oregon",
+    "pennsylvania",
+    "tennessee",
+    "texas",
+    "utah",
+    "vermont",
+    "virginia",
+    "washington",
+    "wisconsin",
+    "wyoming",
+)
+_FOREIGN_TERMS = (
+    "united kingdom",
+    "u.k.",
+    "uk",
+    "great britain",
+    "new zealand",
+    "new south wales",
+    "south africa",
+    "hong kong",
+    "united arab emirates",
+    "czech republic",
+    "south korea",
+    "european union",
+    "united kingdom",
+    "england",
+    "scotland",
+    "wales",
+    "london",
+    "manchester",
+    "britain",
+    "british",
+    "canada",
+    "canadian",
+    "toronto",
+    "vancouver",
+    "montreal",
+    "ottawa",
+    "calgary",
+    "ontario",
+    "india",
+    "indian",
+    "bangalore",
+    "bengaluru",
+    "hyderabad",
+    "mumbai",
+    "delhi",
+    "pune",
+    "chennai",
+    "australia",
+    "australian",
+    "sydney",
+    "melbourne",
+    "brisbane",
+    "germany",
+    "deutschland",
+    "berlin",
+    "munich",
+    "hamburg",
+    "frankfurt",
+    "france",
+    "paris",
+    "spain",
+    "madrid",
+    "barcelona",
+    "netherlands",
+    "amsterdam",
+    "ireland",
+    "dublin",
+    "poland",
+    "warsaw",
+    "portugal",
+    "lisbon",
+    "italy",
+    "rome",
+    "milan",
+    "sweden",
+    "stockholm",
+    "norway",
+    "oslo",
+    "denmark",
+    "copenhagen",
+    "finland",
+    "helsinki",
+    "belgium",
+    "brussels",
+    "austria",
+    "vienna",
+    "switzerland",
+    "zurich",
+    "geneva",
+    "europe",
+    "european",
+    "emea",
+    "apac",
+    "latam",
+    "singapore",
+    "japan",
+    "tokyo",
+    "china",
+    "beijing",
+    "shanghai",
+    "brazil",
+    "mexico",
+    "argentina",
+    "colombia",
+    "bogota",
+    "israel",
+    "dubai",
+    "philippines",
+    "vietnam",
+    "indonesia",
+    "jakarta",
+    "thailand",
+    "malaysia",
+    "taiwan",
+    "seoul",
+    "auckland",
+    "nigeria",
+    "kenya",
+    "pakistan",
+    "bangladesh",
+    "romania",
+    "hungary",
+    "greece",
+    "prague",
+    "ukraine",
+    "estonia",
+    "latvia",
+    "lithuania",
+    "tbilisi",
+)
+_ABBREV_BLOCKED_BY = {
+    "DE": ("germany", "deutschland", "berlin", "munich", "hamburg", "frankfurt"),
+    "CA": ("canada", "canadian", "toronto", "vancouver", "montreal", "ottawa", "calgary", "ontario"),
+    "IN": ("india", "indian", "bangalore", "bengaluru", "mumbai", "delhi", "hyderabad", "pune", "chennai"),
+    "ID": ("indonesia", "jakarta"),
+    "CO": ("colombia", "bogota"),
+}
+
+
+def _has_term(text, term):
+    return re.search(rf"(?<![a-z]){re.escape(term)}(?![a-z])", text) is not None
+
+
+def _us_country_signal(text):
+    if _has_term(text, "united states") or _has_term(text, "usa") or _has_term(text, "u.s.a"):
+        return True
+    if re.search(r"(?<![a-z])u\.s\.?(?![a-z])", text):
+        return True
+    if re.search(r"(?<![a-z])us(?![a-z])", text):
+        return True
+    return False
+
+
+def _foreign_terms_in(text):
+    return [term for term in _FOREIGN_TERMS if _has_term(text, term)]
+
+
+_FOREIGN_COUNTRIES = (
+    "united kingdom",
+    "uk",
+    "u.k.",
+    "canada",
+    "india",
+    "australia",
+    "germany",
+    "france",
+    "spain",
+    "netherlands",
+    "ireland",
+    "poland",
+    "portugal",
+    "italy",
+    "sweden",
+    "norway",
+    "denmark",
+    "finland",
+    "belgium",
+    "austria",
+    "switzerland",
+    "singapore",
+    "japan",
+    "china",
+    "brazil",
+    "mexico",
+    "argentina",
+    "colombia",
+    "israel",
+    "philippines",
+    "vietnam",
+    "indonesia",
+    "thailand",
+    "malaysia",
+    "taiwan",
+    "new zealand",
+    "south africa",
+    "nigeria",
+    "kenya",
+    "pakistan",
+    "romania",
+    "hungary",
+    "greece",
+    "ukraine",
+)
+
+
+def _us_abbrev_hit(original, lowered):
+    if any(_has_term(lowered, country) for country in _FOREIGN_COUNTRIES):
+        return False
+    for match in _US_ABBREV.finditer(original or ""):
+        abbrev = match.group(0)
+        blockers = _ABBREV_BLOCKED_BY.get(abbrev, ())
+        if any(_has_term(lowered, term) for term in blockers):
+            continue
+        return True
+    return False
+
+
+def _unrestricted_remote(text):
+    """True when the location is remote and does not name another place."""
+    cleaned = text
+    for word in ("remote", "worldwide", "anywhere", "global", "work from home", "wfh", "hybrid"):
+        cleaned = re.sub(rf"(?<![a-z]){word}(?![a-z])", " ", cleaned)
+    cleaned = re.sub(r"[^a-z]+", " ", cleaned).strip()
+    return cleaned == "" and any(
+        re.search(rf"(?<![a-z]){word}(?![a-z])", text) for word in ("remote", "worldwide", "anywhere", "global", "wfh")
+    )
+
+
+def _description_excludes_us(description):
+    text = (description or "").lower()
+    if not text:
+        return False
+    if re.search(
+        r"not available in the (?:us|u\.s\.|united states)|"
+        r"excluding the (?:us|u\.s\.|united states)|"
+        r"outside (?:of )?the (?:us|u\.s\.|united states)|"
+        r"(?:uk|u\.k\.|eu|europe|european|canada|india|australia|germany)[\s-]*only",
+        text,
+    ):
+        return True
+    for match in re.finditer(
+        r"(?:must be (?:based|located|residents?) in|only (?:open to|for) (?:candidates )?(?:in|from)|residents of)\s+([^.\n]{0,48})",
+        text,
+    ):
+        snippet = match.group(1)
+        if _foreign_terms_in(snippet) and not _us_country_signal(snippet):
+            return True
+    return False
+
+
+def job_in_united_states(job):
+    """True when the posting is in the US, or remote without excluding the US.
+
+    A blank location stays hidden. A city or country outside the US stays hidden.
+    """
+    original = (job.get("location") or "").strip()
+    if not original:
+        return False
+    text = original.lower()
+    foreign = _foreign_terms_in(text)
+    us = (
+        _us_country_signal(text)
+        or any(_has_term(text, name) for name in _US_STATE_NAMES)
+        or _us_abbrev_hit(original, text)
+    )
+    if us:
+        return True
+    if foreign:
+        return False
+    if _unrestricted_remote(text) and not _description_excludes_us(job.get("description") or ""):
+        return True
+    return False
 
 
 def score_job(job, profile):
@@ -929,6 +1255,7 @@ def public_job(job, profile, detail=False, profile_fp=None):
         "link_opened_at": job.get("link_opened_at"),
         "has_draft": bool(job.get("draft")),
         "search_text": build_search_text(job),
+        "in_usa": job_in_united_states(job),
         "agent": None
         if not agent
         else {
@@ -1003,18 +1330,30 @@ def desk_meta(store, profile):
 
 def state_from(store, profile):
     fp = insight.profile_fp(profile)
-    jobs = [public_job(job, profile, detail=False, profile_fp=fp) for job in store["jobs"].values()]
+    usa_only = profile.get("filters", {}).get("usa_only", True) is not False
+    jobs = []
+    for job in store["jobs"].values():
+        if usa_only and not job_in_united_states(job):
+            continue
+        jobs.append(public_job(job, profile, detail=False, profile_fp=fp))
     jobs.sort(key=lambda item: (item.get("published_ts") or 0, item.get("score") or 0), reverse=True)
+    visible_counts = {status: 0 for status in STATUSES}
+    for job in jobs:
+        visible_counts[job.get("status") or "new"] = visible_counts.get(job.get("status") or "new", 0) + 1
+    visible_counts["all"] = len(jobs)
     meta = desk_meta(store, profile)
+    meta["counts"] = visible_counts
     meta.update(
         {
             "last_refresh_at": store.get("last_refresh_at"),
             "last_new_ids": store.get("last_new_ids") or [],
             "sources": public_sources(store),
-            "total": len(store["jobs"]),
+            "total": len(jobs),
+            "stored_total": len(store["jobs"]),
+            "usa_only": bool(usa_only),
             "queue_ids": [
                 job["id"]
-                for job in store["jobs"].values()
+                for job in jobs
                 if isinstance(job.get("agent"), dict) and job.get("status") == "ready"
             ],
         }

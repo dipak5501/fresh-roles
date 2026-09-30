@@ -157,6 +157,7 @@ function filtersFromForm() {
     location: document.getElementById("filter-location").value.trim(),
     status: statusFilter,
     min_score: Number(document.getElementById("filter-score").value || 0),
+    usa_only: document.getElementById("filter-usa").checked,
   };
 }
 
@@ -180,7 +181,10 @@ function fillProfile(profile) {
   document.getElementById("filter-role").value = filters.role || "";
   document.getElementById("filter-location").value = filters.location || "";
   document.getElementById("filter-score").value = String(filters.min_score || 0);
+  const usa = document.getElementById("filter-usa");
+  if (usa) usa.checked = filters.usa_only !== false;
   statusFilter = filters.status || "new";
+  renderUsaNote();
 }
 
 function localWarnings(profile) {
@@ -294,6 +298,7 @@ function matches(job, filters) {
     `${job.title} ${job.company} ${job.location} ${(job.tags || []).join(" ")}`.toLowerCase();
   if (filters.keyword && !blob.includes(filters.keyword.toLowerCase())) return false;
   if (filters.role && !(job.title || "").toLowerCase().includes(filters.role.toLowerCase())) return false;
+  if (filters.usa_only && job.in_usa === false) return false;
   if (filters.location) {
     const want = filters.location.toLowerCase();
     const loc = (job.location || "").toLowerCase();
@@ -307,6 +312,15 @@ function matches(job, filters) {
   return true;
 }
 
+function renderUsaNote() {
+  const note = document.getElementById("usa-note");
+  const box = document.getElementById("filter-usa");
+  if (!note || !box) return;
+  note.textContent = box.checked
+    ? "United States only. Jobs in other countries are hidden. US-remote roles stay when the posting does not exclude the US."
+    : "United States filter is off. Jobs from other countries can appear.";
+}
+
 function renderList() {
   const root = document.getElementById("list");
   const filters = filtersFromForm();
@@ -314,9 +328,13 @@ function renderList() {
     .filter((job) => matches(job, filters))
     .slice()
     .sort((a, b) => (b.published_ts || 0) - (a.published_ts || 0) || (b.score || 0) - (a.score || 0));
+  const usaOn = filters.usa_only !== false;
   document.getElementById("list-count").textContent = jobs.length
-    ? `${matched.length} shown · newest first`
-    : "";
+    ? `${matched.length} shown · newest first${usaOn ? " · United States only" : ""}`
+    : usaOn
+      ? "United States only"
+      : "";
+  renderUsaNote();
   root.replaceChildren();
   if (!matched.length) {
     let message = "Nothing in this view. Try All, or lower the minimum match.";
@@ -884,6 +902,14 @@ function bind() {
   if (weekly) {
     weekly.addEventListener("input", () => {
       renderWeek();
+      scheduleSave();
+    });
+  }
+  const usaBox = document.getElementById("filter-usa");
+  if (usaBox) {
+    usaBox.addEventListener("change", () => {
+      listLimit = 40;
+      renderUsaNote();
       scheduleSave();
     });
   }

@@ -1,6 +1,6 @@
 # Fresh Roles
 
-Open the app: [http://127.0.0.1:8765](http://127.0.0.1:8765)
+Paste this into the browser address bar: `http://127.0.0.1:8765`
 
 If that page does not load, start it from this folder:
 
@@ -8,11 +8,13 @@ If that page does not load, start it from this folder:
 python3 app.py
 ```
 
-Then open [http://127.0.0.1:8765](http://127.0.0.1:8765) again. It stays on this computer. It is not a public website.
+Then paste `http://127.0.0.1:8765` into the address bar again. It stays on this computer. It is not a public website, and there is no GitHub website link for it.
 
 A local job desk for **new public postings**. It scores each job against your profile, explains the fit and the gaps, drafts a job-specific resume emphasis and cover note, and keeps a supervised queue.
 
 You send every application yourself. Clicking a job opens the original posting in a new tab. This app does not submit it.
+
+The list starts as United States only. A remote job stays when it is US-remote or does not name another country. Jobs with no location, and jobs in places such as the UK, EU, Canada, India, or Australia, stay hidden until you turn that filter off.
 
 ## Run it
 
@@ -22,7 +24,7 @@ From this folder:
 python3 app.py
 ```
 
-Then open [http://127.0.0.1:8765](http://127.0.0.1:8765).
+Then paste `http://127.0.0.1:8765` into the address bar.
 
 Python 3.9 or newer. Plain text and DOCX need nothing extra. To read PDF text locally, install one library:
 
