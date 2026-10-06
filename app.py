@@ -291,7 +291,7 @@ def normalize_profile(raw):
             "location": clip(filters.get("location"), 80),
             "status": status,
             "min_score": min_score,
-            "usa_only": True if "usa_only" not in filters else bool(filters.get("usa_only")),
+            "usa_only": True,
             "sort": filters.get("sort") if filters.get("sort") in {"newest", "score"} else "newest",
             "posted": filters.get("posted") if filters.get("posted") in {"hour", "day", "week", "any"} else "hour",
         },
@@ -761,28 +761,50 @@ def _description_excludes_us(description):
     return False
 
 
-def job_in_united_states(job):
-    """True when the posting is in the US, or remote without excluding the US.
+def _without_state_names(text):
+    cleaned = text
+    for name in sorted(_US_STATE_NAMES, key=len, reverse=True):
+        cleaned = re.sub(rf"(?<![a-z]){re.escape(name)}(?![a-z])", " ", cleaned)
+    return cleaned
 
-    A blank location stays hidden. A city or country outside the US stays hidden.
+
+def job_in_united_states(job):
+    """True only when the location itself names the United States.
+
+    A blank location is out. A remote job must say US, a US state, or US-remote
+    such as "Remote - US" or "USA · Remote". "Remote" alone is out. Another
+    country named in the location is out, even when the US is also mentioned.
     """
     original = (job.get("location") or "").strip()
     if not original:
         return False
     text = original.lower()
-    foreign = _foreign_terms_in(text)
     us = (
         _us_country_signal(text)
         or any(_has_term(text, name) for name in _US_STATE_NAMES)
         or _us_abbrev_hit(original, text)
     )
-    if us:
-        return True
-    if foreign:
+    if not us:
         return False
-    if _unrestricted_remote(text) and not _description_excludes_us(job.get("description") or ""):
-        return True
-    return False
+    if any(_has_term(_without_state_names(text), country) for country in _FOREIGN_COUNTRIES):
+        return False
+    if _description_excludes_us(job.get("description") or ""):
+        return False
+    return True
+
+
+def prune_outside_united_states(store):
+    """Drop stored jobs that are not clearly in the United States.
+
+    Applied history stays, because that list is a record of what was submitted.
+    """
+    protected = set(_applications(store))
+    jobs = store["jobs"]
+    for job_id, job in list(jobs.items()):
+        if job_id in protected:
+            continue
+        if not isinstance(job, dict) or not job_in_united_states(job):
+            jobs.pop(job_id, None)
 
 
 def score_job(job, profile):
@@ -941,6 +963,7 @@ def fetch_json(url):
 
 
 def fetch_remotive():
+    # Remotive's public API has no country parameter. US jobs are kept after ingest.
     data = fetch_json("https://remotive.com/api/remote-jobs")
     jobs = []
     for item in data.get("jobs") or []:
@@ -949,7 +972,7 @@ def fetch_remotive():
         job = make_job(
             title=item.get("title"),
             company=item.get("company_name"),
-            location=item.get("candidate_required_location") or "Remote",
+            location=item.get("candidate_required_location") or "",
             remote=True,
             tags=item.get("tags") or [],
             url=item.get("url"),
@@ -965,6 +988,7 @@ def fetch_remotive():
 
 
 def fetch_arbeitnow():
+    # Arbeitnow's public API has no country parameter. US jobs are kept after ingest.
     url = "https://www.arbeitnow.com/api/job-board-api"
     jobs = []
     for _ in range(2):
@@ -994,6 +1018,7 @@ def fetch_arbeitnow():
 
 
 def fetch_remoteok():
+    # Remote OK's public API has no country parameter. US jobs are kept after ingest.
     data = fetch_json("https://remoteok.com/api")
     jobs = []
     if not isinstance(data, list):
@@ -1004,7 +1029,7 @@ def fetch_remoteok():
         job = make_job(
             title=item.get("position"),
             company=item.get("company"),
-            location=item.get("location") or "Remote",
+            location=item.get("location") or "",
             remote=True,
             tags=item.get("tags") or [],
             url=item.get("url") or item.get("apply_url"),
@@ -1020,7 +1045,8 @@ def fetch_remoteok():
 
 
 def fetch_jobicy():
-    data = fetch_json("https://jobicy.com/api/v2/remote-jobs?count=50")
+    # Jobicy accepts geo=usa, so the request itself is limited to the United States.
+    data = fetch_json("https://jobicy.com/api/v2/remote-jobs?count=50&geo=usa")
     jobs = []
     for item in data.get("jobs") or []:
         if not isinstance(item, dict):
@@ -1031,7 +1057,7 @@ def fetch_jobicy():
         job = make_job(
             title=item.get("jobTitle"),
             company=item.get("companyName"),
-            location=item.get("jobGeo") or "Remote",
+            location=item.get("jobGeo") or "",
             remote=True,
             tags=[item.get("jobIndustry"), item.get("jobLevel"), item.get("jobType")],
             url=item.get("url"),
@@ -1175,6 +1201,8 @@ def integrate(store, fetched):
             loose.setdefault(key, job["id"])
     added = []
     for incoming in fetched:
+        if not job_in_united_states(incoming):
+            continue
         current = jobs.get(incoming["id"])
         if current:
             merge_existing(current, incoming)
@@ -1247,6 +1275,7 @@ def refresh():
         if fetched:
             store["last_refresh_at"] = now_iso()
             store["last_new_ids"] = added_ids
+        prune_outside_united_states(store)
         fresh = freshness_counts(store)
         save_store(store)
 
@@ -1605,7 +1634,7 @@ def desk_meta(store, profile):
 def state_from(store, profile):
     _sync_application_history(store, profile)
     fp = insight.profile_fp(profile)
-    usa_only = profile.get("filters", {}).get("usa_only", True) is not False
+    usa_only = True
     jobs = []
     saved = []
     for job in store["jobs"].values():

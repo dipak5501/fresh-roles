@@ -171,7 +171,7 @@ function filtersFromForm() {
     location: document.getElementById("filter-location").value.trim(),
     status: statusFilter,
     min_score: Number(document.getElementById("filter-score").value || 0),
-    usa_only: document.getElementById("filter-usa").checked,
+    usa_only: true,
     sort: document.getElementById("filter-sort") ? document.getElementById("filter-sort").value : "newest",
     posted: document.getElementById("filter-posted") ? document.getElementById("filter-posted").value : "hour",
   };
@@ -197,8 +197,6 @@ function fillProfile(profile) {
   document.getElementById("filter-role").value = filters.role || "";
   document.getElementById("filter-location").value = filters.location || "";
   document.getElementById("filter-score").value = String(filters.min_score || 0);
-  const usa = document.getElementById("filter-usa");
-  if (usa) usa.checked = filters.usa_only !== false;
   const sort = document.getElementById("filter-sort");
   if (sort && document.activeElement !== sort) sort.value = filters.sort === "score" ? "score" : "newest";
   const posted = document.getElementById("filter-posted");
@@ -346,7 +344,7 @@ function matches(job, filters) {
     `${job.title} ${job.company} ${job.location} ${(job.tags || []).join(" ")}`.toLowerCase();
   if (filters.keyword && !blob.includes(filters.keyword.toLowerCase())) return false;
   if (filters.role && !titleHasRole(job.title, filters.role)) return false;
-  if (filters.usa_only && job.in_usa === false) return false;
+  if (job.in_usa === false) return false;
   if (filters.location) {
     const want = filters.location.toLowerCase();
     const loc = (job.location || "").toLowerCase();
@@ -362,11 +360,9 @@ function matches(job, filters) {
 
 function renderUsaNote() {
   const note = document.getElementById("usa-note");
-  const box = document.getElementById("filter-usa");
-  if (!note || !box) return;
-  note.textContent = box.checked
-    ? "United States only. Jobs in other countries are hidden. US-remote roles stay when the posting does not exclude the US."
-    : "United States filter is off. Jobs from other countries can appear.";
+  if (!note) return;
+  note.textContent =
+    "Search is United States only. A job must name the United States, a US state, or US-remote. Remote jobs that do not say US are left out.";
 }
 
 function todayISO() {
@@ -656,7 +652,6 @@ function renderList() {
   const source = deskView === "saved" ? savedJobs : jobs;
   if (deskView === "saved") {
     filters.status = "all";
-    filters.usa_only = false;
     filters.posted = "any";
   }
   const sortMode = filters.sort === "score" ? "score" : "newest";
@@ -677,7 +672,7 @@ function renderList() {
     if (sortMode === "score") return (b.score || 0) - (a.score || 0) || (b.published_ts || 0) - (a.published_ts || 0);
     return (b.published_ts || 0) - (a.published_ts || 0) || (b.score || 0) - (a.score || 0);
   });
-  const usaOn = deskView === "matches" && filters.usa_only !== false;
+  const usaOn = deskView === "matches";
   const sortLabel = sortMode === "score" ? "highest match first" : "newest first";
   document.getElementById("list-count").textContent = source.length
     ? `${matched.length} shown · ${postedLabel} · ${sortLabel}${usaOn ? " · United States only" : ""}`
@@ -1328,14 +1323,6 @@ function bind() {
   if (weekly) {
     weekly.addEventListener("input", () => {
       renderWeek();
-      scheduleSave();
-    });
-  }
-  const usaBox = document.getElementById("filter-usa");
-  if (usaBox) {
-    usaBox.addEventListener("change", () => {
-      listLimit = 40;
-      renderUsaNote();
       scheduleSave();
     });
   }
