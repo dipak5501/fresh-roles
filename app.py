@@ -97,6 +97,7 @@ DEFAULT_PROFILE = {
             "min_score": 1,
             "usa_only": True,
             "sort": "newest",
+            "posted": "hour",
         },
 }
 
@@ -292,6 +293,7 @@ def normalize_profile(raw):
             "min_score": min_score,
             "usa_only": True if "usa_only" not in filters else bool(filters.get("usa_only")),
             "sort": filters.get("sort") if filters.get("sort") in {"newest", "score"} else "newest",
+            "posted": filters.get("posted") if filters.get("posted") in {"hour", "day", "week", "any"} else "hour",
         },
     }
 
@@ -347,13 +349,26 @@ def parse_ts(value):
     if re.fullmatch(r"\d+(\.\d+)?", text):
         return parse_ts(float(text))
     text = text.replace("Z", "+00:00")
+    parsed = None
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
+        parsed = None
+    if parsed is None:
+        try:
+            from email.utils import parsedate_to_datetime
+
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+    if parsed is None:
         return 0
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return int(parsed.timestamp())
+    try:
+        return int(parsed.timestamp())
+    except (OverflowError, OSError, ValueError):
+        return 0
 
 
 def canonical_url(url):
@@ -1114,6 +1129,43 @@ def trim_jobs(store):
         jobs.pop(job.get("id"), None)
 
 
+def posted_cutoff(window):
+    seconds = {"hour": 3600, "day": 86400, "week": 7 * 86400}.get(window or "")
+    if not seconds:
+        return 0
+    return int(time.time()) - seconds
+
+
+def freshness_counts(store):
+    """Count United States jobs whose feed gave a real posting time."""
+    stored = 0
+    last_hour = 0
+    last_day = 0
+    undated = 0
+    hour_at = posted_cutoff("hour")
+    day_at = posted_cutoff("day")
+    for job in store.get("jobs", {}).values():
+        if not isinstance(job, dict):
+            continue
+        stored += 1
+        if not job_in_united_states(job):
+            continue
+        ts = int(job.get("published_ts") or 0)
+        if ts <= 0:
+            undated += 1
+            continue
+        if ts >= hour_at:
+            last_hour += 1
+        if ts >= day_at:
+            last_day += 1
+    return {
+        "stored": stored,
+        "last_hour": last_hour,
+        "last_day": last_day,
+        "undated_us": undated,
+    }
+
+
 def integrate(store, fetched):
     jobs = store["jobs"]
     loose = {}
@@ -1195,6 +1247,7 @@ def refresh():
         if fetched:
             store["last_refresh_at"] = now_iso()
             store["last_new_ids"] = added_ids
+        fresh = freshness_counts(store)
         save_store(store)
 
     added = len(added_ids) if fetched else 0
@@ -1210,6 +1263,10 @@ def refresh():
         message += " Skipped: " + "; ".join(skipped) + "."
     if errors:
         message += " Problems: " + "; ".join(errors) + "."
+    message += (
+        f" {fresh['last_hour']} United States jobs have a posting time in the last hour."
+        f" {fresh['stored']} jobs are stored."
+    )
     message += " Nothing was submitted."
     return {
         "ok": bool(fetched or skipped),
@@ -1218,6 +1275,8 @@ def refresh():
         "skipped": skipped,
         "errors": errors,
         "message": message,
+        "last_hour": fresh["last_hour"],
+        "stored": fresh["stored"],
     }
 
 
@@ -1584,6 +1643,7 @@ def state_from(store, profile):
                 if isinstance(job.get("agent"), dict) and job.get("status") == "ready"
             ],
             "applied_list": application_summary(store),
+            "freshness": freshness_counts(store),
         }
     )
     return {

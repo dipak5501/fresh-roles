@@ -173,6 +173,7 @@ function filtersFromForm() {
     min_score: Number(document.getElementById("filter-score").value || 0),
     usa_only: document.getElementById("filter-usa").checked,
     sort: document.getElementById("filter-sort") ? document.getElementById("filter-sort").value : "newest",
+    posted: document.getElementById("filter-posted") ? document.getElementById("filter-posted").value : "hour",
   };
 }
 
@@ -200,6 +201,9 @@ function fillProfile(profile) {
   if (usa) usa.checked = filters.usa_only !== false;
   const sort = document.getElementById("filter-sort");
   if (sort && document.activeElement !== sort) sort.value = filters.sort === "score" ? "score" : "newest";
+  const posted = document.getElementById("filter-posted");
+  const postedValue = ["hour", "day", "week", "any"].includes(filters.posted) ? filters.posted : "hour";
+  if (posted && document.activeElement !== posted) posted.value = postedValue;
   statusFilter = filters.status || "new";
   renderUsaNote();
 }
@@ -313,14 +317,35 @@ function renderTabs() {
   }
 }
 
+function withinPosted(job, posted) {
+  const windowName = posted || "hour";
+  if (windowName === "any") return true;
+  const seconds = { hour: 3600, day: 86400, week: 7 * 86400 }[windowName];
+  if (!seconds) return true;
+  const ts = Number(job && job.published_ts) || 0;
+  if (ts <= 0) return false;
+  return ts >= Math.floor(Date.now() / 1000) - seconds;
+}
+
+function titleHasRole(title, role) {
+  const hay = (title || "").toLowerCase();
+  const needle = (role || "").trim().toLowerCase();
+  if (!needle) return true;
+  if (hay.includes(needle)) return true;
+  const words = needle.split(/[^a-z0-9+#]+/).filter((word) => word.length >= 4);
+  if (!words.length) return hay.includes(needle);
+  return words.some((word) => hay.includes(word));
+}
+
 function matches(job, filters) {
   if (filters.status && filters.status !== "all" && job.status !== filters.status) return false;
+  if (!withinPosted(job, filters.posted || "hour")) return false;
   if ((job.score || 0) < (Number(filters.min_score) || 0)) return false;
   const blob =
     job.search_text ||
     `${job.title} ${job.company} ${job.location} ${(job.tags || []).join(" ")}`.toLowerCase();
   if (filters.keyword && !blob.includes(filters.keyword.toLowerCase())) return false;
-  if (filters.role && !(job.title || "").toLowerCase().includes(filters.role.toLowerCase())) return false;
+  if (filters.role && !titleHasRole(job.title, filters.role)) return false;
   if (filters.usa_only && job.in_usa === false) return false;
   if (filters.location) {
     const want = filters.location.toLowerCase();
@@ -613,6 +638,14 @@ async function toggleSaved(job) {
   if (button && detail && detail.id === updated.id) button.textContent = updated.saved ? "Saved" : "Save";
 }
 
+function setPosted(windowName) {
+  const box = document.getElementById("filter-posted");
+  if (box) box.value = windowName;
+  listLimit = 40;
+  renderList();
+  scheduleSave();
+}
+
 function renderList() {
   if (deskView === "applied") {
     renderApplied();
@@ -624,37 +657,70 @@ function renderList() {
   if (deskView === "saved") {
     filters.status = "all";
     filters.usa_only = false;
+    filters.posted = "any";
   }
   const sortMode = filters.sort === "score" ? "score" : "newest";
-  const matched = source
-    .filter((job) => matches(job, filters))
-    .slice()
-    .sort((a, b) => {
-      if (sortMode === "score") return (b.score || 0) - (a.score || 0) || (b.published_ts || 0) - (a.published_ts || 0);
-      return (b.published_ts || 0) - (a.published_ts || 0) || (b.score || 0) - (a.score || 0);
-    });
+  const postedLabels = { hour: "Last hour", day: "24 hours", week: "7 days", any: "Any time" };
+  const postedLabel = postedLabels[filters.posted] || "Last hour";
+  let relaxedNote = "";
+  let matched = source.filter((job) => matches(job, filters));
+  if (!matched.length && deskView === "matches" && source.length) {
+    const windowOnly = source.filter((job) =>
+      matches(job, Object.assign({}, filters, { role: "", keyword: "", location: "", min_score: 0 }))
+    );
+    if (windowOnly.length) {
+      matched = windowOnly;
+      relaxedNote = "The other filters hid every job in this window, so these are the posts from that time.";
+    }
+  }
+  matched = matched.slice().sort((a, b) => {
+    if (sortMode === "score") return (b.score || 0) - (a.score || 0) || (b.published_ts || 0) - (a.published_ts || 0);
+    return (b.published_ts || 0) - (a.published_ts || 0) || (b.score || 0) - (a.score || 0);
+  });
   const usaOn = deskView === "matches" && filters.usa_only !== false;
   const sortLabel = sortMode === "score" ? "highest match first" : "newest first";
   document.getElementById("list-count").textContent = source.length
-    ? `${matched.length} shown · ${sortLabel}${usaOn ? " · United States only" : ""}`
+    ? `${matched.length} shown · ${postedLabel} · ${sortLabel}${usaOn ? " · United States only" : ""}`
     : usaOn
-      ? "United States only"
-      : "";
+      ? "United States only · " + postedLabel
+      : postedLabel;
   const sortNote = document.getElementById("sort-note");
   if (sortNote && deskView === "matches") {
-    sortNote.textContent =
+    const base =
       sortMode === "score"
         ? "Highest match first. Raise the minimum match to hide weak overlaps. Set it to 0 to see posts with no overlap."
         : "Newest posts first. Raise the minimum match to hide weak overlaps. Set it to 0 to see posts with no overlap.";
+    sortNote.textContent = relaxedNote ? relaxedNote + " " + base : base;
   }
   renderUsaNote();
   root.replaceChildren();
-    if (!matched.length) {
-    let message = "Nothing in this view. Try All, or lower the minimum match.";
+  if (!matched.length) {
+    let message = "Nothing in this view. Try All, or clear the role and keyword filters.";
+    let wider = "";
     if (deskView === "saved") message = "No saved jobs yet. Use Save on a match. Saved jobs stay separate from Applied.";
     else if (!jobs.length && loadingJobs) message = "Looking for new public postings…";
     else if (!jobs.length) message = "No posts stored yet. Use Refresh new jobs.";
+    else if (filters.posted === "hour") {
+      message = "No United States jobs were posted in the last hour. Jobs without a date from the feed are not counted as new.";
+      wider = "day";
+    } else if (filters.posted === "day") {
+      message = "No United States jobs were posted in the last 24 hours.";
+      wider = "week";
+    } else if (filters.posted === "week") {
+      message = "No United States jobs were posted in the last 7 days.";
+      wider = "any";
+    }
+    const widerLabel = { day: "Show 24 hours", week: "Show 7 days", any: "Show any time" }[wider];
     root.append(h("p", { class: "empty" }, message));
+    if (widerLabel) {
+      root.append(
+        h(
+          "button",
+          { class: "btn", type: "button", onclick: () => setPosted(wider) },
+          widerLabel
+        )
+      );
+    }
     return;
   }
   for (const job of matched.slice(0, listLimit)) {
@@ -1297,6 +1363,14 @@ function bind() {
   const filterSort = document.getElementById("filter-sort");
   if (filterSort) {
     filterSort.addEventListener("change", () => {
+      listLimit = 40;
+      renderList();
+      scheduleSave();
+    });
+  }
+  const filterPosted = document.getElementById("filter-posted");
+  if (filterPosted) {
+    filterPosted.addEventListener("change", () => {
       listLimit = 40;
       renderList();
       scheduleSave();

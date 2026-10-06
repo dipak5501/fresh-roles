@@ -14,7 +14,7 @@ A local job desk for **new public postings**. It scores each job against your pr
 
 You send every application yourself. Clicking a job opens the original posting in a new tab. This app does not submit it.
 
-The list starts as United States only. A remote job stays when it is US-remote or does not name another country. Jobs with no location, and jobs in places such as the UK, EU, Canada, India, or Australia, stay hidden until you turn that filter off.
+The list starts as United States only, and on posts from the last hour. The time comes from the feed. A job with no posting date is left out of Last hour. The Posted control can switch to 24 hours, 7 days, or any time. A remote job stays when it is US-remote or does not name another country. Jobs with no location, and jobs in places such as the UK, EU, Canada, India, or Australia, stay hidden until you turn that filter off.
 
 ## Run it
 

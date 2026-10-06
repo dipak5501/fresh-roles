@@ -124,11 +124,19 @@
         <div id="queue-list"></div>
       </div>
       <div class="filters">
+        <label>Posted
+          <select id="filter-posted">
+            <option value="hour" selected>Last hour</option>
+            <option value="day">24 hours</option>
+            <option value="week">7 days</option>
+            <option value="any">Any time</option>
+          </select>
+        </label>
         <label>Keyword
           <input id="filter-keyword" type="text" autocomplete="off" />
         </label>
         <label>Role
-          <input id="filter-role" type="text" autocomplete="off" placeholder="In the title" />
+          <input id="filter-role" type="text" autocomplete="off" placeholder="A word in the title" />
         </label>
         <label>Location
           <input id="filter-location" type="text" autocomplete="off" />
